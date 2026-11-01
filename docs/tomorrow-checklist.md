@@ -2,13 +2,13 @@
 
 One checklist for the whole deployment-to-live path. Complete the gates **in order**; each gate names the exact service and account, the purpose and minimum permission, the action **you** perform directly (never paste passwords, verification codes or client secrets into chat), the expected result with a safe verification method, and recovery/rollback. Stop at any gate and keep everything else paused. Institutional (BMU) denial at any point ends that gate's scope — respect it and continue with the remaining gates only if they do not depend on it.
 
-**Standing rules:** zero additional expenditure (no billing activation, no paid tiers); automation and AI stay off unless a gate explicitly enables them; all local evidence was produced on Node v24.22.1 at commit `3906d9d` (docs/qa-report.md); nothing here authorizes live sends or calendar mutations beyond the gate that names them.
+**Standing rules:** zero additional expenditure (no billing activation, no paid tiers); automation and AI stay off unless a gate explicitly enables them; all local evidence was produced on Node v24.22.1 at Step 3 commit `2b51475` — expect **143/143 tests** at that commit (docs/qa-report.md); nothing here authorizes live sends or calendar mutations beyond the gate that names them.
 
 ## Gate 0 — Local reproducibility (no Google access)
 
 - **Where:** your machine, repo `C:\Anubhav Sharma\Projects\Automating Mailbox and Calender`, branch `develop` (commit `3906d9d`).
 - **Do:** `npm ci --ignore-scripts`, then `npm run typecheck && npm test && npm run build`.
-- **Expected:** typecheck 0 errors; **143/143 tests**; `dist/apps-script/` created (Code.gs + Index.html + appsscript.json). This is the reproducibility item the devops review could not verify for you.
+- **Expected:** typecheck 0 errors; **143/143 tests**; `dist/apps-script/` created (Code.gs + Index.html + appsscript.json). This is the reproducibility item the devops review could not verify for you; verify at commit `2b51475` or later.
 - **Verify safely:** `node --version` prints v24 or newer; the build's final line says "no credentials included".
 - **Rollback/recovery:** none needed — a failed step leaves no side effects; fix Node version (24+) and rerun.
 

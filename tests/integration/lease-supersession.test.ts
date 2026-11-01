@@ -90,16 +90,16 @@ for(const variant of [false,true] as const){
   const h=harness(variant);
   expect(h.runA().status).toBe('ok');
   // Worker B superseded A mid-pass: B acquired the expired lease and ran its
-  // own pass (B inserted T2's successor event... — no: B's pass sees T1's
-  // pending insert and finishes it; T2's task row was merge-removed and T2
-  // had no link, so B never touches T2).
+  // own pass, finishing A's in-flight T1 insert; T2's task row had been
+  // merge-removed and T2 held no link, so B never touches T2.
   const t2EventId=managedEventId(T2,dest,h.sharedIds);
   // RED today: the resumed stale worker A re-inserts T2's event.
   expect(h.staleInsertT2()).toBe('');
   expect(h.events.has(t2EventId)).toBe(false);
   expect(h.t2LinkExists()).toBe(false);
-  // B's cursor survived A's resume.
-  expect(typeof h.cursor()).toBe('string');
+  // B's cursor survived A's resume: it points at T1, the last task B's pass
+  // processed — a value pin, so A clobbering or advancing the cursor fails.
+  expect(h.cursor()).toBe(new Date(START).toISOString()+':task:gmail:google:subject123:m1');
   // The superseded pass reports honestly instead of finishing silently.
   expect(h.reconcileMessages().join(' | ')).toMatch(/superseded/i);
  });

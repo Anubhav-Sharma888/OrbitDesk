@@ -490,10 +490,14 @@ export class AppService {
   }
   if(pass.length&&supersededAfter<0){
    const last=pass[pass.length-1].task;
-   const row=this.deps.store.get<{last?:string}>('reconcile_cursor','owner');
-   this.deps.store.put('reconcile_cursor','owner',{last:last.createdAt+':'+last.id},row?.version??null);
+   // One atomic for read-modify-write so a racing holder cannot make the
+   // cursor CAS throw and cost this pass its summary activity row.
+   this.deps.store.atomic(()=>{
+    const row=this.deps.store.get<{last?:string}>('reconcile_cursor','owner');
+    this.deps.store.put('reconcile_cursor','owner',{last:last.createdAt+':'+last.id},row?.version??null);
+   });
   }
-  const summary='Calendar reconcile: '+counts.events+' events, '+counts.synced+' synced, '+counts.conflict+' conflicts, '+counts.attention+' needing attention, '+counts.skipped+' skipped'+(deferred?', '+deferred+' deferred to the next pass':'')+(supersededAfter>=0?'; superseded after '+processed+' of '+pass.length+' tasks (lease lost); remaining tasks are retried by the current holder':'')+(issues.length?'; '+issues.join(' | '):'');
+  const summary='Calendar reconcile: '+counts.events+' events, '+counts.synced+' synced, '+counts.conflict+' conflicts, '+counts.attention+' needing attention, '+counts.skipped+' skipped'+(deferred?', '+deferred+' deferred to the next pass':'')+(supersededAfter>=0?'; superseded after '+processed+' of '+pass.length+' tasks (lease lost); remaining tasks are retried on the next pass':'')+(issues.length?'; '+issues.join(' | '):'');
   return {kind:'reconcile',message:summary,status:counts.conflict+counts.attention>0?'blocked':'success'};
  }
 
