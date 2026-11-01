@@ -2,7 +2,7 @@ import {AppError,type Clock,type Due,type Ids,type RecordStore,type RouteDecisio
 import {extractEmailDue,validateDue} from './deadlines.js';
 import {exactClassroomMatch,sourceKey,sourceRef} from './correlate.js';
 export interface CreateTask {title:string;notes?:string;officialDue?:Due;plannedDue?:Due}
-export interface TaskPatch {title?:string;notes?:string;officialDue?:Due;override?:RouteDecision}
+export interface TaskPatch {title?:string;notes?:string;officialDue?:Due;override?:RouteDecision|null}
 type Controls={title?:boolean;notes?:boolean};
 function text(value:string,max:number,label:string):string {if(typeof value!=='string'||!value.trim()||value.length>max)throw new AppError('INVALID_INPUT','Enter '+label+' of up to '+max+' characters');return value}
 function decision(d:RouteDecision):RouteDecision {if(!d||!['automatic','review','ignore'].includes(d.mode)||!Array.isArray(d.destinations)||d.destinations.length>9||d.destinations.some(x=>!x||typeof x.connectionId!=='string'||typeof x.calendarId!=='string'||!x.connectionId||!x.calendarId))throw new AppError('INVALID_INPUT','Choose explicit calendar destinations');return d}
@@ -22,7 +22,9 @@ export class TaskService {
   if(patch.title!==undefined){t.title=text(patch.title,300,'a task title');c.title=true}
   if(patch.notes!==undefined){if(typeof patch.notes!=='string'||patch.notes.length>12000)throw new AppError('INVALID_INPUT','Use up to 12,000 characters for task notes');t.notes=patch.notes;c.notes=true}
   if(patch.officialDue!==undefined){if(t.kind!=='manual')throw new AppError('OFFICIAL_DUE_READ_ONLY','Use your planned date to reschedule imported work');t.officialDue=validateDue(patch.officialDue)}
-  if(patch.override!==undefined)t.override=decision(patch.override);
+  // override:null explicitly clears the item override so routing falls back to
+  // rules and account defaults; an object override is validated as before.
+  if(patch.override!==undefined)t.override=patch.override===null?undefined:decision(patch.override);
   this.store.put('task-controls',id,c,controls?.version??null);return t;
  }))}
  dismiss(id:string,version:number):Task{return this.mutate(id,version,t=>({...t,status:'dismissed'}))}

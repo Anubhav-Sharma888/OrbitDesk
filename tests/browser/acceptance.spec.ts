@@ -18,25 +18,28 @@ class DemoRpc {
    let value:unknown;
    const error=(code:string,message:string)=>route.fulfill({json:{ok:false,error:{code,message},state:this.state}});
    if(command.type==='task.dismiss'||command.type==='task.restore'||command.type==='task.complete'){
-    const task=this.state.tasks.find(t=>t.id===p.id)!;if(task.version!==p.version)return error('CONFLICT','This task changed in another session. Review the latest version.');task.status=command.type==='task.dismiss'?'dismissed':command.type==='task.complete'?'complete':'open';task.version++;
-   } else if(command.type==='task.update'){const task=this.state.tasks.find(t=>t.id===p.id)!;if(task.version!==p.version)return error('CONFLICT','This task changed in another session.');Object.assign(task,p.patch,{version:task.version+1});}
+    const task=this.state.tasks.find(t=>t.id===p.id)!;if(task.version!==p.version)return error('VERSION_CONFLICT','This item changed on another device');task.status=command.type==='task.dismiss'?'dismissed':command.type==='task.complete'?'complete':'open';task.version++;
+   } else if(command.type==='task.update'){const task=this.state.tasks.find(t=>t.id===p.id)!;if(task.version!==p.version)return error('VERSION_CONFLICT','This item changed on another device');Object.assign(task,p.patch,{version:task.version+1});}
    else if(command.type==='task.create') this.state.tasks.push({id:`task-${this.state.tasks.length+1}`,version:1,title:p.title,notes:p.notes||'',kind:'manual',status:'open',officialDue:p.due||{kind:'unknown'},sourceRefs:[],confidence:'clear',createdAt:now,updatedAt:now});
    else if(command.type==='message.append')this.state.messages.push({id:`message-${this.state.messages.length+1}`,conversationId:p.conversationId,text:p.text,role:'user',version:1,createdAt:now});
    else if(command.type==='conversation.create'){const c={id:`chat-${this.state.conversations.length+1}`,title:p.title,version:1,createdAt:now,updatedAt:now};this.state.conversations.push(c);value=c;}
    else if(command.type==='draft.save'){
      const draft=this.state.drafts.find(d=>d.id===p.id)!;
-     if(draft.version!==p.version)return error('CONFLICT','This draft changed in another session. Review the latest version before saving.');
-     Object.assign(draft,{body:p.body,userContent:p.userContent,to:p.to||draft.to,version:draft.version+1});
+     if(draft.version!==p.version)return error('VERSION_CONFLICT','This item changed on another device');
+     // Mirrors DraftService.save (src/conversations/drafts.ts): an explicit save clears the imported-review flag.
+     Object.assign(draft,{body:p.body,userContent:p.userContent,to:p.to||draft.to,version:draft.version+1,status:'draft',importedUnreviewed:false});
    } else if(command.type==='draft.send'){
      const draft=this.state.drafts.find(d=>d.id===p.id)!;
-     if(draft.version!==p.version)return error('CONFLICT','This draft changed in another session.');
+     if(draft.version!==p.version)return error('VERSION_CONFLICT','This item changed on another device');
      if(!draft.userContent.trim()||!draft.body.trim()||p.instruction!=='send')return error('CONTENT_REQUIRED','Add your reply content before sending.');
      draft.status='sent';draft.version++;
-   } else if(command.type==='route.preview'||command.type==='route.save'){
+   } else if(command.type==='route.preview'){
+     // Mirrors RoutingService.preview: writability problems return ok:true inside value.errors, not an RPC error.
      const rule=p.rule as RoutingRule;
-     if(rule.decision.destinations.some(d=>d.calendarId==='readonly'))return error('CALENDAR_NOT_WRITABLE','Shared read-only is not writable. Choose an authorized writable calendar.');
-     if(command.type==='route.save')this.state.routes.push({...rule,id:rule.id||'rule-1',version:1});
-     value={matched:1,destinationNames:['Personal calendar'],decisions:[{taskId:'task-1',title:'Prepare circuits assignment',decision:rule.decision}]};
+     value=rule.decision.destinations.some(d=>d.calendarId==='readonly')?{decision:rule.decision,reason:'Item override',errors:['The selected calendar is unavailable or does not grant supported write access']}:{matched:1,destinationNames:['Personal calendar'],decisions:[{taskId:'task-1',title:'Prepare circuits assignment',decision:rule.decision}]};
+   } else if(command.type==='route.save'){
+     const rule=p.rule as RoutingRule;
+     this.state.routes.push({...rule,id:rule.id||'rule-1',version:1});
    } else if(command.type==='settings.save')this.state.settings=p.settings;
    await route.fulfill({json:{ok:true,state:this.state,value}});
   });}
@@ -50,7 +53,7 @@ test('phoneConversationContinuesOnLaptop',async({browser})=>{
 });
 test('staleDraftShowsConflict',async({page,context})=>{
  const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Replies');await page.getByLabel('Your reply content').fill('The prototype is ready.');await page.getByLabel('Draft body').fill('The prototype is ready.');rpc.state.drafts[0].version=2;await rpc.patch({drafts:rpc.state.drafts});
- await page.getByRole('button',{name:'Save draft',exact:true}).click();await expect(page.getByRole('alert')).toContainText('changed in another session');await expect(page.getByRole('dialog')).toHaveCount(0);
+ await page.getByRole('button',{name:'Save draft',exact:true}).click();await expect(page.getByRole('alert')).toContainText(/changed on another device|changed in another session/);await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 test('manualDismissSurvivesSync',async({page,context})=>{
  const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Tasks');await page.getByRole('button',{name:'Dismiss Prepare circuits assignment'}).click();await page.getByRole('button',{name:'Sync now',exact:true}).click();await page.getByRole('button',{name:'Dismissed',exact:true}).click();await expect(page.getByText('Prepare circuits assignment',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'Restore Prepare circuits assignment'})).toBeVisible();
@@ -59,7 +62,7 @@ test('rulePreviewShowsDestination',async({page,context})=>{
  const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Routing');await page.getByLabel('Rule name').fill('Classwork to personal');await page.getByLabel('Destination calendar').selectOption('personal|primary');await page.getByRole('button',{name:'Preview rule',exact:true}).click();await expect(page.getByTestId('route-preview')).toContainText('Personal calendar');
 });
 test('unwritableCalendarShowsError',async({page,context})=>{
- const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Routing');await page.getByLabel('Rule name').fill('Invalid destination');await page.getByLabel('Destination calendar').selectOption('personal|readonly');await page.getByRole('button',{name:'Preview rule',exact:true}).click();await expect(page.getByRole('alert')).toContainText('not writable');
+ const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Routing');await page.getByLabel('Rule name').fill('Invalid destination');await page.getByLabel('Destination calendar').selectOption('personal|readonly');await page.getByLabel('Routing action').selectOption('automatic');await page.getByRole('button',{name:'Preview rule',exact:true}).click();await expect(page.getByRole('alert')).toContainText(/not writable|does not grant supported write access/);
 });
 test('missingReplyContentDoesNotSend',async({page,context})=>{
  const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Replies');await page.getByRole('button',{name:'Review & send',exact:true}).click();await expect(page.getByRole('alert')).toContainText('reply content');await expect(page.getByRole('dialog')).toHaveCount(0);expect(rpc.commands.filter(c=>c.type==='draft.send')).toHaveLength(0);
@@ -75,12 +78,33 @@ test('replyConfirmationBindsExactSavedVersion',async({page,context})=>{
 });
 
 
-test('itemRoutingOverrideIsExplicitAndCanBeCleared',async({page,context})=>{
- const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Tasks');await page.getByRole('button',{name:'Prepare circuits assignment',exact:true}).click();
- await expect(page.getByText('Published coursework. Due time has not been supplied.',{exact:true})).toBeVisible();
- await page.getByLabel('This task routing').selectOption('review');await page.getByLabel('This task destination').selectOption('personal|primary');await page.getByRole('button',{name:'Save item override',exact:true}).click();
- await expect(page.getByRole('status')).toContainText('override');await page.getByLabel('This task routing').selectOption('inherit');await page.getByRole('button',{name:'Save item override',exact:true}).click();
- const updates=rpc.commands.filter(c=>c.type==='task.update');expect(updates[0].payload).toMatchObject({id:'task-1',version:1,patch:{override:{mode:'review',destinations:[{connectionId:'personal',calendarId:'primary'}]}}});expect(updates[1].payload).toMatchObject({version:2,patch:{override:null}});
+// Item overrides persist through the backend: task.update accepts patch.override
+// (src/app/service.ts task.update schema) and state.get returns it after reload.
+// Without ORBITDESK_BASE_URL the route mock below mirrors that same contract.
+test('itemOverrideRoundTrip',async({page,context})=>{
+ const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Tasks');
+ await page.getByRole('button',{name:'Prepare circuits assignment',exact:true}).click();
+ await page.getByLabel('Item routing destination').selectOption('personal|primary');
+ await page.getByRole('button',{name:'Save item routing override',exact:true}).click();
+ await expect(page.getByText('Override: always routes to Personal calendar',{exact:true})).toBeVisible();
+ expect(rpc.commands.filter(c=>c.type==='task.update')[0].payload).toMatchObject({id:'task-1',version:1,patch:{override:{mode:'automatic',destinations:[{connectionId:'personal',calendarId:'primary'}]}}});
+ await page.reload();
+ await page.getByRole('button',{name:'Prepare circuits assignment',exact:true}).click();
+ await expect(page.getByText('Override: always routes to Personal calendar',{exact:true})).toBeVisible();
+});
+// Imported drafts stay blocked until an explicit save clears importedUnreviewed
+// (operations.md:17; DraftService.save clears it and bumps the version).
+test('importedDraftShowsReviewGate',async({page,context})=>{
+ const rpc=new DemoRpc();rpc.state.drafts[0].importedUnreviewed=true;await rpc.attach(context);await page.goto('/');await open(page,'Replies');
+ await expect(page.getByText('was imported and has not been reviewed',{exact:false})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Save draft',exact:true})).toBeDisabled();
+ await expect(page.getByRole('button',{name:'Review & send',exact:true})).toBeDisabled();
+ await page.getByLabel('Your reply content').fill('Reviewed by me and ready.');await page.getByLabel('Draft body').fill('Reviewed by me and ready.');
+ await page.getByRole('button',{name:'Review and keep the imported draft',exact:true}).click();
+ await expect(page.getByRole('status')).toContainText('reviewed and saved');
+ await expect(page.getByText('was imported and has not been reviewed',{exact:false})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'Save draft',exact:true})).toBeEnabled();
+ expect(rpc.commands.filter(c=>c.type==='draft.save')[0].payload).toMatchObject({id:'draft-1',version:1,to:['colleague@example.test'],userContent:'Reviewed by me and ready.'});
 });
 test('rulePreviewKeepsUnsavedEditorValues',async({page,context})=>{
  const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Routing');await page.getByLabel('Rule name').fill('Keep this unsaved name');await page.getByLabel('Destination calendar').selectOption('personal|primary');await page.getByRole('button',{name:'Preview rule',exact:true}).click();await expect(page.getByTestId('route-preview')).toContainText('Personal calendar');await expect(page.getByLabel('Rule name')).toHaveValue('Keep this unsaved name');

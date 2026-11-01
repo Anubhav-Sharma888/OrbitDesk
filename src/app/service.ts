@@ -1,5 +1,5 @@
 import {z} from 'zod';
-import {AppError,type Activity,type CalendarView,type ChatMessage,type Clock,type Codec,type Due,type HttpPort,type Ids,type RecordStore,type ReplyDraft,type RpcResponse,type Settings,type SourceItem,type Task,type UiState} from '../shared/contracts.js';
+import {AppError,type Activity,type CalendarView,type ChatMessage,type Clock,type Codec,type ConnectionView,type Due,type HttpPort,type Ids,type RecordStore,type ReplyDraft,type RpcResponse,type Settings,type SourceItem,type Task,type UiState} from '../shared/contracts.js';
 import {TaskService} from '../tasks/task-service.js';
 import {ConversationService} from '../conversations/conversations.js';
 import {DraftService} from '../conversations/drafts.js';
@@ -33,13 +33,17 @@ export interface AppServiceDeps {
  syncPort?:SyncPort; // bounded import pages; omitted => sync commands fail closed
  calendars?:Pick<CalendarPort,'listCalendars'>; // live calendar list verification for previews/sync refresh
  aiConfig?:(settings:Settings)=>GroqConfiguration|null; // derives Groq config (key/model stay in restricted Script Properties, never Sheets)
- setupChecks?:()=>string[];
+ setupChecks?:()=>string[]; // readiness seam (credentials, storage probe); a nonempty result sets app.setupRequired and app.storageReady=false
  mode?:'live'|'demo';
 }
 
 type ActivityDraft=Omit<Activity,'id'|'at'>;
 interface Outcome {value?:unknown;activity?:ActivityDraft}
 type Actor={kind:string;email:string};
+// Structural mirror of the scheduler's 'sync_accounts' record (not exported by
+// src/sync/scheduler.ts). lastSuccessAt exists only after a fully completed
+// page; failures add nextAttemptAt/error while preserving lastSuccessAt.
+interface SyncHealthRecord {checkpoint?:unknown;lastSuccessAt?:string;lastAttemptAt?:string;nextAttemptAt?:number;failures?:number;error?:string}
 
 const requestIdPattern=/^[-A-Za-z0-9_:.]{1,128}$/;
 const idPattern=/^[-A-Za-z0-9_:.]{1,300}$/;
@@ -74,7 +78,7 @@ const commandSchemas:Record<string,z.ZodType>={
  'state.get':z.object({}).strict(),
  'sync.now':z.object({}).strict(),
  'task.create':z.object({title:z.string().max(500),notes:z.string().max(12000).optional(),due:due.optional(),plannedDue:due.optional()}).strict(),
- 'task.update':z.object({id:recordId,version:z.number().int().positive(),patch:z.object({title:z.string().optional(),notes:z.string().optional(),officialDue:due.optional(),override:decision.optional(),plannedDue:z.union([due,z.null()]).optional()}).strict()}).strict(),
+ 'task.update':z.object({id:recordId,version:z.number().int().positive(),patch:z.object({title:z.string().optional(),notes:z.string().optional(),officialDue:due.optional(),override:decision.nullable().optional(),plannedDue:z.union([due,z.null()]).optional()}).strict()}).strict(),
  'task.complete':z.object({id:recordId,version:z.number().int().positive()}).strict(),
  'task.dismiss':z.object({id:recordId,version:z.number().int().positive()}).strict(),
  'task.restore':z.object({id:recordId,version:z.number().int().positive()}).strict(),
@@ -155,7 +159,7 @@ export class AppService {
 
  getUiState():UiState {
   const store=this.deps.store,settings=this.readSettings();
-  const accounts=this.deps.broker?this.deps.broker.listConnections(this.deps.owner):[];
+  const accounts=(this.deps.broker?this.deps.broker.listConnections(this.deps.owner):[]).map(account=>this.withSyncHealth(account));
   const calendars=store.list<CalendarView>('calendars').map(r=>r.data);
   const tasks=this.tasks.list();
   const conversations=store.list<{id:string;title:string;createdAt:string}>('conversations').map(r=>({...r.data,id:r.id,version:r.version,updatedAt:r.updatedAt}));
@@ -172,7 +176,25 @@ export class AppService {
   let setupRequired:string[]=[];
   try{setupRequired=this.deps.setupChecks?this.deps.setupChecks():[]}
   catch(e){setupRequired=[e instanceof AppError?e.message:'Setup could not be verified']}
-  return {app:{mode:this.deps.mode??'live',owner:this.deps.owner,storageReady:true,aiConfigured,setupRequired},settings,accounts,calendars,tasks,conversations,messages,drafts,routes,activity,sources};
+  // setupChecks is the readiness seam: a nonempty result (missing credentials, a
+  // storage probe that fails, ...) marks the workspace setup-required and not ready.
+  const storageReady=setupRequired.length===0;
+  return {app:{mode:this.deps.mode??'live',owner:this.deps.owner,storageReady,aiConfigured,setupRequired},settings,accounts,calendars,tasks,conversations,messages,drafts,routes,activity,sources};
+ }
+
+ // Read-only health projection: each account's lastSync comes from the
+ // SyncScheduler's stored 'sync_accounts' record, where lastSuccessAt is written
+ // only after a fully completed import page, so an unfinished attempt never makes
+ // an account look freshly synced (operations.md). A stored sync error/backoff is
+ // surfaced on the account. Rows are read directly — the scheduler (which needs a
+ // sync port) is never constructed during state projection.
+ private withSyncHealth(account:ConnectionView):ConnectionView {
+  const health=this.deps.store.get<SyncHealthRecord>('sync_accounts',account.id)?.data;
+  if(!health)return account;
+  return {...account,
+   ...(typeof health.lastSuccessAt==='string'?{lastSync:health.lastSuccessAt}:{}),
+   ...(typeof health.error==='string'&&health.error?{error:health.error}:{})
+  };
  }
 
  private trusted(actor:Actor):boolean {

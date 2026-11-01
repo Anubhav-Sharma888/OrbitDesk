@@ -3,8 +3,11 @@ import {MemoryRecordStore} from '../../src/storage/record-store.js';
 import {AppService,type AppServiceDeps} from '../../src/app/service.js';
 import {MemorySecrets} from '../../src/accounts/secret-store.js';
 import {OAuthBroker} from '../../src/accounts/oauth.js';
+import {TaskService} from '../../src/tasks/task-service.js';
+import {decideRoute} from '../../src/routing/rules.js';
 import type {SyncPort} from '../../src/sync/scheduler.js';
-import type {Codec,ConnectionView,RpcResponse} from '../../src/shared/contracts.js';
+import {AppError} from '../../src/shared/contracts.js';
+import type {Codec,ConnectionView,RpcResponse,Task} from '../../src/shared/contracts.js';
 
 const owner='owner@example.com';
 const actor={kind:'user' as const,email:owner};
@@ -190,4 +193,89 @@ it('syncNowRunsBoundedManualRoundAndRespectsTheManualThrottle',()=>{
  const second=okValue<{status:string;pages:number}>(service.handle(actor,{type:'sync.now',requestId:'sync-2',payload:{}}));
  expect(second).toMatchObject({status:'throttled',pages:0});
  expect(pages).toBe(1);
+});
+
+it('stateProjectsLastSyncOnlyFromFullyCompletedImports',()=>{
+ const broker=fakeBroker();
+ const {store,service}=fixture({broker});
+ const connection=connectFixtureBroker(broker);
+ // No syncPort dependency exists, so this projection can only read stored rows.
+ let query=0;
+ const accountView=()=>okState(service.handle(actor,{type:'state.get',requestId:'q'+(++query),payload:{}})).accounts.find(a=>a.id===connection.id)!;
+ // Nothing attempted yet: no lastSync.
+ expect(accountView().lastSync).toBeUndefined();
+ // An unfinished attempt (checkpoint advanced, no completed import) never looks fresh.
+ const attempt={checkpoint:'page-2',failures:0,lastAttemptAt:clock.iso()};
+ const attemptRow=store.put('sync_accounts',connection.id,attempt,null);
+ expect(accountView().lastSync).toBeUndefined();
+ // Only the last fully completed import sets lastSync.
+ store.put('sync_accounts',connection.id,{...attempt,lastSuccessAt:clock.iso()},attemptRow.version);
+ expect(accountView().lastSync).toBe(clock.iso());
+ // A later failed attempt keeps the old completed time (the scheduler preserves
+ // lastSuccessAt on failure) and surfaces the health error on the account.
+ store.put('sync_accounts',connection.id,{checkpoint:null,failures:1,lastAttemptAt:clock.iso(),lastSuccessAt:clock.iso(),nextAttemptAt:clock.now()+120000,error:'This account needs a later sync attempt'},attemptRow.version+1);
+ const afterFailure=accountView();
+ expect(afterFailure.lastSync).toBe(clock.iso());
+ expect(afterFailure.error).toBe('This account needs a later sync attempt');
+});
+
+it('setupChecksGateStorageReadyAndSetupRequired',()=>{
+ const {service}=fixture({setupChecks:()=>['Google sign-in credentials are missing from restricted script properties']});
+ const state=okState(service.handle(actor,{type:'state.get',requestId:'s1',payload:{}}));
+ expect(state.app.setupRequired).toEqual(['Google sign-in credentials are missing from restricted script properties']);
+ expect(state.app.storageReady).toBe(false);
+ // The workspace itself still serves saved data while setup is pending.
+ expect(state.settings.automationEnabled).toBe(false);
+ // A setup probe that fails (e.g. storage not configured) is reported, not crashed.
+ const failing=fixture({setupChecks:()=>{throw new AppError('SETUP_REQUIRED','Set the STORAGE_SPREADSHEET_ID script property to the private OrbitDesk spreadsheet')}});
+ const reported=okState(failing.service.handle(actor,{type:'state.get',requestId:'s2',payload:{}}));
+ expect(reported.app.storageReady).toBe(false);
+ expect(reported.app.setupRequired).toEqual(['Set the STORAGE_SPREADSHEET_ID script property to the private OrbitDesk spreadsheet']);
+});
+
+it('clearOverrideUnsetsTheOverrideAndFallsBackToRuleRouting',()=>{
+ const {store,service,ids:generated}=fixture({calendars:{listCalendars:(connectionId:string)=>[{connectionId,id:connectionId+'-calendar',summary:connectionId,accessRole:'writer',writable:true}]}});
+ // A source-backed task so a saved rule can match it after the override is cleared.
+ const imported=new TaskService(store,clock,generated).importSource({connectionId:'a',id:'m1',type:'gmail',title:'Submit lab report',text:'Please submit your lab report by 2026-11-02',receivedAt:clock.iso(),updatedAt:clock.iso(),sender:'Lecturer <teacher@example.com>',threadId:'t1',rfcMessageId:'<m1@example.com>'})!;
+ // Force review through an override, then clear it with override:null.
+ const forced=okValue<Task>(service.handle(actor,{type:'task.update',requestId:'o1',payload:{id:imported.id,version:imported.version,patch:{override:{mode:'review',destinations:[]}}}}));
+ expect(forced.override).toMatchObject({mode:'review'});
+ const cleared=okValue<Task>(service.handle(actor,{type:'task.update',requestId:'o2',payload:{id:imported.id,version:forced.version,patch:{override:null}}}));
+ expect(cleared.override).toBeUndefined();
+ const state=okState(service.handle(actor,{type:'state.get',requestId:'o3',payload:{}}));
+ const savedTask=state.tasks.find(t=>t.id===imported.id)!;
+ expect(savedTask.override).toBeUndefined();
+ // Routing no longer honors a forced review: the matching saved rule decides.
+ const decision=decideRoute(savedTask,{rules:[{id:'rule-1',version:1,label:'To calendar',sourceConnectionIds:['a'],priority:0,enabled:true,conditions:{},decision:{mode:'automatic',destinations:[{connectionId:'a',calendarId:'a-calendar'}]}}]});
+ expect(decision.decision).toEqual({mode:'automatic',destinations:[{connectionId:'a',calendarId:'a-calendar'}]});
+ expect(decision.reason).toBe('Matching rule');
+ // CAS stays intact: the pre-clear version can no longer mutate the task.
+ const stale=service.handle(actor,{type:'task.update',requestId:'o4',payload:{id:imported.id,version:forced.version,patch:{override:null}}});
+ expect(stale.ok).toBe(false);
+ if(!stale.ok)expect(stale.error.code).toBe('VERSION_CONFLICT');
+});
+
+it('clearOverrideOnTaskWithoutOverrideIsANoOp',()=>{
+ const {service}=fixture();
+ const created=okValue<Task>(service.handle(actor,{type:'task.create',requestId:'n0',payload:{title:'Personal errand',notes:'',due:{kind:'unknown'}}}));
+ const result=okValue<Task>(service.handle(actor,{type:'task.update',requestId:'n1',payload:{id:created.id,version:created.version,patch:{override:null}}}));
+ expect(result.override).toBeUndefined();
+ expect(result.version).toBe(created.version+1);
+ const stale=service.handle(actor,{type:'task.update',requestId:'n2',payload:{id:created.id,version:created.version,patch:{title:'Renamed'}}});
+ expect(stale.ok).toBe(false);
+ if(!stale.ok)expect(stale.error.code).toBe('VERSION_CONFLICT');
+});
+
+it('invalidOverrideShapeIsStillRejected',()=>{
+ const {service}=fixture();
+ const created=okValue<Task>(service.handle(actor,{type:'task.create',requestId:'v0',payload:{title:'Study',notes:'',due:{kind:'unknown'}}}));
+ const badMode=service.handle(actor,{type:'task.update',requestId:'v1',payload:{id:created.id,version:created.version,patch:{override:{mode:'delete-everything'}}}});
+ expect(badMode.ok).toBe(false);
+ if(!badMode.ok)expect(badMode.error.code).toBe('INVALID_INPUT');
+ const missingDestinations=service.handle(actor,{type:'task.update',requestId:'v2',payload:{id:created.id,version:created.version,patch:{override:{mode:'automatic'}}}});
+ expect(missingDestinations.ok).toBe(false);
+ if(!missingDestinations.ok)expect(missingDestinations.error.code).toBe('INVALID_INPUT');
+ // Rejected patches never reach the store.
+ const state=okState(service.handle(actor,{type:'state.get',requestId:'v3',payload:{}}));
+ expect(state.tasks.find(t=>t.id===created.id)!.version).toBe(1);
 });
