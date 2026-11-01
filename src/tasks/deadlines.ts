@@ -5,7 +5,7 @@ export function validateDue(value:Due):Due {
  if(value.kind==='unknown')return {kind:'unknown'};
  if(value.kind==='date'&&typeof value.date==='string'&&dateIsValid(value.date))return {kind:'date',date:value.date};
  if(value.kind==='instant'&&typeof value.at==='string'&&typeof value.zone==='string'&&/^[A-Za-z_+\-/]{1,80}$/.test(value.zone)){
-  const m=/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-](\d{2}):(\d{2}))$/.exec(value.at);
+  const m=value.at.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-](\d{2}):(\d{2}))$/);
   if(m&&dateIsValid(m[1])&&Number(m[2])<24&&Number(m[3])<60&&Number(m[4])<60&&(!m[9]||(Number(m[9])<=14&&Number(m[10])<60&&(Number(m[9])<14||Number(m[10])===0)))&&Number.isFinite(Date.parse(value.at)))return {kind:'instant',at:new Date(value.at).toISOString(),zone:value.zone};
  }
  throw new AppError('INVALID_DUE','Choose a valid date or explicit time');

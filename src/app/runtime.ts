@@ -6,7 +6,7 @@ let depth=0;
 export function scriptAtomic<T>(work:()=>T):T {
  if(depth){depth++;try{return work()}finally{depth--}}
  lock??=LockService.getScriptLock();
- if(!lock.tryLock(3000))throw new AppError('BUSY','Another operation is running; try again shortly');
+ if(!lock.tryLock(3000))throw new AppError('BUSY','This workspace operation is already running; try again shortly');
  depth++;
  try{return work()}finally{depth--;lock.releaseLock()}
 }
@@ -18,9 +18,36 @@ export class ScriptSecrets implements SecretStore {
  keys(prefix:string):string[]{return Object.keys(this.properties.getProperties()).filter(k=>k.startsWith(prefix))}
  atomic<T>(work:()=>T):T{return scriptAtomic(work)}
 }
+// Outbound server requests are restricted to the application's documented
+// provider endpoints. This allowlist is enforced at the only network sink in
+// the server bundle (defense in depth on top of GoogleTransport's origin and
+// path whitelists, and it also covers the OAuth identity lookup). Redirects
+// are disabled and the scheme is fixed to https.
+const outboundHosts:Record<string,boolean>={
+ 'gmail.googleapis.com':true,
+ 'www.googleapis.com':true,
+ 'classroom.googleapis.com':true,
+ 'openidconnect.googleapis.com':true,
+ 'api.groq.com':true
+};
+export function outboundHostAllowed(host:string):boolean {return outboundHosts[String(host).toLowerCase().replace(/\.$/,'')]===true}
+export function outboundUrlAllowed(raw:string):boolean {
+ if(!/^https:\/\//i.test(raw))return false;
+ const host=raw.match(/^https:\/\/([^/:?#]+)(?::\d+)?(?:[/?#]|$)/i);
+ return host!==null&&outboundHostAllowed(host[1]);
+}
 export class AppsHttp implements HttpPort {
- fetch(request:HttpRequest):HttpResponse {
-  const response=UrlFetchApp.fetch(request.url,{method:request.method.toLowerCase() as GoogleAppsScript.URL_Fetch.HttpMethod,headers:request.headers,payload:request.body,muteHttpExceptions:true,followRedirects:false,validateHttpsCertificates:true});
+ fetch(outbound:HttpRequest):HttpResponse {
+  const target=String(outbound.url);
+  if(!outboundUrlAllowed(target))throw new AppError('BLOCKED_URL','Outbound requests are restricted to the documented provider endpoints');
+  const cleanHeaders:Record<string,string>={'Content-Type':'application/json'};
+  for(const [k,v] of Object.entries(outbound.headers)){
+   const name=String(k).replace(/[^A-Za-z0-9\-]/g,'');
+   const value=String(v).replace(/[\r\n]/g,' ');
+   if(name.length===0)continue;
+   cleanHeaders[name]=value;
+  }
+  const response=UrlFetchApp.fetch(target,{method:outbound.method.toLowerCase() as GoogleAppsScript.URL_Fetch.HttpMethod,headers:cleanHeaders,payload:outbound.body,muteHttpExceptions:true,followRedirects:false,validateHttpsCertificates:true});
   let json:unknown=null;try{const content=response.getContentText();json=content?JSON.parse(content):null}catch{json=null}
   const headers:Record<string,string>={};for(const [k,v]of Object.entries(response.getAllHeaders()))headers[k]=String(v);
   return {status:response.getResponseCode(),json,headers};
@@ -40,10 +67,10 @@ export function configuredOwner():string {
 }
 export function requireOwner():string {
  const actor=Session.getActiveUser().getEmail().toLowerCase();
- if(!actor||actor!==configuredOwner())throw new AppError('UNAUTHORIZED','Owner access required');
+ if(!actor||actor!==configuredOwner())throw new AppError('UNAUTHORIZED','Owner guard requires your signed-in owner account');
  return actor;
 }
-export class AppsOAuthFactory implements OAuthFactory {
+export class AppsOAuthFactory {
  service(name:string,capabilities:Capability[]=[],workflow:'manual'|'agent'='manual'){
   const properties=PropertiesService.getScriptProperties();
   const prefix=workflow==='agent'?'GOOGLE_AGENT':'GOOGLE';

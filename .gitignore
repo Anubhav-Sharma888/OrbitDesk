@@ -7,4 +7,6 @@ test-results/
 .clasp.json
 .clasprc.json
 .superpowers/
+.mimosa/*
+!.mimosa/security-policy.json
 *.log
