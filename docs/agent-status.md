@@ -1,4 +1,13 @@
-# Agent status dashboard — corrective milestone (closed 2026-11-01)
+# Agent status dashboard — Step 4 clean-install verification (closed 2026-11-01)
+
+| Agent / lane | Assignment | Owned files | Stage | Last action (evidence) | Current / next | Blocker |
+|---|---|---|---|---|---|---|
+| devops-deployment-specialist | Isolated clean-install/build verification (Gate 0) | temp copy `AppData/Local/Temp/orbitdesk-clean-6d17cd2` (no project files) | **complete** | `git archive 6d17cd2` copy (79 files, blob-verified), `npm ci --ignore-scripts` exit 0 (46 packages, 0 vulnerabilities), 143/143 + build on Node v24.22.1, artifact SHA-256s recorded, isolation greps 0 | — | none |
+| quality-analyst | Independent check of commands/results/artifacts | read-only + temp copy re-runs | **complete** | Per-file blob integrity 79/79; re-ran typecheck/test/build (143/143); hashes MATCH devops records; rebuild determinism 4/4; main project untouched (HEAD/status/node_modules mtimes verified) | — | none |
+| coordinator | Checklist corrections + evidence records | docs/tomorrow-checklist.md, docs/qa-report.md, docs/development-ledger.md | **complete** | Gate 0 isolated-variant instructions + npm-runtime caution; Gate 1 preserve-existing-properties and data-preserving rollback; Sheets-scope boundary wording; records pushed (29f7466) | PR evidence comment posted | none |
+| integration-engineer | Only if an installation/build defect required code correction | — | **not needed** | Install and checks passed without defects | — | none |
+
+Milestone history: Step 2 (corrective six findings) and Step 3 (lease fencing + deployment candidate) closed earlier today — see git history 33a40fc…6d17cd2 and prior dashboard states.
 
 Final state. Per-agent detail lives in `docs/agent-status/<agent>-<assignment>.md`; only that agent writes its own file. No credentials, private messages or internal reasoning are recorded here.
 
