@@ -4,7 +4,8 @@ import {TaskService} from '../tasks/task-service.js';
 import {ConversationService} from '../conversations/conversations.js';
 import {DraftService} from '../conversations/drafts.js';
 import {ReplyService,type ReplySendPort} from '../replies/send.js';
-import {RoutingService,normalizeDecision} from '../routing/rules.js';
+import {RoutingService,decideRoute,normalizeDecision} from '../routing/rules.js';
+import {CalendarReconciler} from '../routing/reconcile.js';
 import {SyncScheduler,type SyncPort,type SyncRound} from '../sync/scheduler.js';
 import {ExportService} from '../storage/exports.js';
 import {GroqClient,type GroqConfiguration} from '../ai/groq.js';
@@ -31,7 +32,7 @@ export interface AppServiceDeps {
  broker?:OAuthBroker; // account connections; omitted => account commands fail closed
  sendPort?:ReplySendPort; // Gmail send port; omitted => draft.send fails closed with no pending write
  syncPort?:SyncPort; // bounded import pages; omitted => sync commands fail closed
- calendars?:Pick<CalendarPort,'listCalendars'>; // live calendar list verification for previews/sync refresh
+ calendars?:Pick<CalendarPort,'listCalendars'>; // calendar list port for preview verification and cache refresh; the reconcile stage additionally requires a full writable port (writableCalendarPort guard)
  aiConfig?:(settings:Settings)=>GroqConfiguration|null; // derives Groq config (key/model stay in restricted Script Properties, never Sheets)
  setupChecks?:()=>string[]; // readiness seam (credentials, storage probe); a nonempty result sets app.setupRequired and app.storageReady=false
  mode?:'live'|'demo';
@@ -109,9 +110,19 @@ const labels:Record<string,string>={
 };
 // Policy/validation/conflict rejections are 'blocked'; everything else is an operational 'error'.
 const blockedCodes=new Set(['UNAUTHORIZED','INVALID_INPUT','INVALID_RECORD','INVALID_SOURCE','INVALID_DUE','INVALID_ROUTE','INVALID_IMPORT','INVALID_CAPABILITY','INVALID_EMAIL','INVALID_WORKFLOW','INVALID_CALLBACK','INVALID_HEADER','INVALID_CURSOR','NOT_FOUND','VERSION_CONFLICT','REMOTE_CONFLICT','DRAFT_LOCKED','SEND_INSTRUCTION_REQUIRED','USER_CONTENT_REQUIRED','REVIEW_REQUIRED','IDEMPOTENCY_CONFLICT','REQUEST_CONFLICT','STALE_PREVIEW','OFFICIAL_DUE_READ_ONLY','WRONG_IDENTITY','ACCOUNT_MISMATCH','WRONG_CALLBACK','STALE_CALLBACK','EXPIRED_CALLBACK','MANUAL_CONNECTION_REQUIRED','NO_CONNECTION','MISSING_PERMISSION','LINK_LIMIT','EXPORT_LIMIT','IMPORT_LIMIT','SYNC_CONTRACT','INVALID_BUDGET','UNKNOWN_COMMAND']);
+// Bounded post-sync reconcile pass: at most this many eligible tasks per sync round.
+const MAX_RECONCILE_TASKS=10;
 
 function safeError(error:unknown):{code:string;message:string} {return error instanceof AppError?{code:error.code,message:error.message}:{code:'INTERNAL_ERROR',message:'The operation could not be completed'}}
 function sendActivityStatus(status:ReplyDraft['status']):Activity['status'] {return status==='sent'?'success':status==='pending'?'pending':status==='unknown'?'unknown':status==='failed'?'error':'blocked'}
+// The reconcile stage writes events, so it requires a full CalendarPort. A
+// list-only port (calendar verification for previews, demo backends) fail-closes
+// the stage: it can read calendars but can never write events.
+function writableCalendarPort(port:Pick<CalendarPort,'listCalendars'>|undefined):CalendarPort|null {
+ if(!port||typeof port!=='object')return null;
+ const candidate=port as Partial<CalendarPort>;
+ return typeof candidate.get==='function'&&typeof candidate.insert==='function'&&typeof candidate.update==='function'&&typeof candidate.delete==='function'?port as CalendarPort:null;
+}
 
 export class AppService {
  constructor(private deps:AppServiceDeps){}
@@ -148,6 +159,7 @@ export class AppService {
  runScheduledSync():{status:string;pages:number;items:number} {
   try{
    const outcome=this.deps.store.atomic(()=>{const result=this.runSyncRound(false);if(result.activity)this.writeActivity(result.activity);return result});
+   this.reconcileAfterSync(outcome.stopped);
    return {status:outcome.value.status,pages:outcome.value.pages,items:outcome.value.items};
   }catch(e){
    const error=e instanceof AppError?e:new AppError('INTERNAL_ERROR','The operation could not be completed');
@@ -292,18 +304,19 @@ export class AppService {
  private manualSync():RpcResponse {
   const outcome=this.deps.store.atomic(()=>{const result=this.runSyncRound(true);if(result.activity)this.writeActivity(result.activity);return result});
   this.refreshCalendars(); // best-effort calendar cache refresh after the round; failures never fail the sync
+  this.reconcileAfterSync(outcome.stopped);
   return {ok:true,state:this.getUiState(),value:outcome.value};
  }
 
- private runSyncRound(manual:boolean):{value:{status:string;pages:number;items:number;calls:number};activity?:ActivityDraft} {
+ private runSyncRound(manual:boolean):{value:{status:string;pages:number;items:number;calls:number};activity?:ActivityDraft;stopped:string} {
   const round=this.runScheduler(manual);
   const status=round.stopped==='complete'||round.stopped==='time'||round.stopped==='round'?'ok':round.stopped;
   // A trigger firing while automation is disabled records nothing, so a disabled
   // deployment with an installed trigger cannot flood the activity log.
-  if(round.stopped==='disabled')return {value:{status,pages:0,items:0,calls:0}};
+  if(round.stopped==='disabled')return {value:{status,pages:0,items:0,calls:0},stopped:round.stopped};
   const message=(manual?'Manual sync ':'Scheduled import ')+round.stopped+': '+round.pages+' pages, '+round.items+' items';
   const statusKind:Activity['status']=round.pages>0?'success':['busy','throttled','budget'].includes(round.stopped)?'blocked':'success';
-  return {value:{status,pages:round.pages,items:round.items,calls:round.calls},activity:{kind:manual?'sync.now':'scheduledSync',message,status:statusKind}};
+  return {value:{status,pages:round.pages,items:round.items,calls:round.calls},activity:{kind:manual?'sync.now':'scheduledSync',message,status:statusKind},stopped:round.stopped};
  }
 
  private runScheduler(manual:boolean):SyncRound {
@@ -340,6 +353,54 @@ export class AppService {
 
  private removeCalendars(connectionId:string):void {
   for(const row of this.deps.store.list<CalendarView>('calendars'))if(row.data.connectionId===connectionId)this.deps.store.remove('calendars',row.id,row.version);
+ }
+
+ // Bounded post-sync reconcile stage (operations.md). Pages never reconcile
+ // (operations.md:9); this stage runs only after a sync round that finished its
+ // pages ('complete' or 'time'), inside its own store.atomic, and records one
+ // summarizing activity row. It acts only on open, reviewed tasks whose routing
+ // decision is 'automatic' with explicit destinations the owner configured via
+ // rule, item override or account default; review/ignore decisions never write.
+ // Per-task failures (etag conflicts, unreachable calendars) are contained in
+ // the summary and never break the sync result. LIVE CALENDAR MUTATIONS remain
+ // gated by the human deployment checklist: the stage only acts through the
+ // injected calendar port (live GoogleCalendar in production, a simulated port
+ // in demo/local runs), and live writes may be enabled only after the live
+ // checklist passes.
+ private reconcileAfterSync(stopped:string):void {
+  if(stopped!=='complete'&&stopped!=='time')return;
+  try{
+   this.deps.store.atomic(()=>{
+    const entry=this.reconcilePass();
+    if(entry)this.writeActivity(entry);
+   });
+  }catch{/* reconcile is best-effort; the sync result and its shape stand */}
+ }
+
+ private reconcilePass():ActivityDraft {
+  const calendar=writableCalendarPort(this.deps.calendars);
+  if(!calendar)return {kind:'reconcile',message:'Calendar reconcile skipped: no writable calendar port is configured in this environment',status:'blocked'};
+  const settings=this.readSettings();
+  const rules=this.deps.store.list<UiState['routes'][number]>('routes').map(r=>({...r.data,version:r.version}));
+  const reconciler=new CalendarReconciler(this.deps.store,calendar,this.deps.clock,this.deps.ids);
+  const candidates=this.tasks.list()
+   .filter(t=>t.status==='open'&&!t.importedUnreviewed)
+   .sort((a,b)=>a.createdAt===b.createdAt?(a.id<b.id?-1:1):(a.createdAt<b.createdAt?-1:1)); // oldest first
+  const pass=candidates.slice(0,MAX_RECONCILE_TASKS),deferred=candidates.length-pass.length;
+  const counts={events:0,synced:0,conflict:0,attention:0,skipped:0};
+  const issues:string[]=[];
+  for(const task of pass){
+   const decision=decideRoute(task,{rules,accountDefaults:settings.accountDefaults});
+   if(decision.decision.mode!=='automatic'||!decision.decision.destinations.length){counts.skipped++;continue}
+   const result=reconciler.reconcile(task,decision.decision);
+   if(result.status==='synced'){counts.synced++;counts.events+=result.eventIds.length}
+   else if(result.status==='skipped')counts.skipped++;
+   else if(result.status==='conflict')counts.conflict++;
+   else counts.attention++; // blocked or unknown outcomes need owner attention
+   if(result.error&&issues.length<3)issues.push(result.error.slice(0,140));
+  }
+  const summary='Calendar reconcile: '+counts.events+' events, '+counts.synced+' synced, '+counts.conflict+' conflicts, '+counts.attention+' needing attention, '+counts.skipped+' skipped'+(deferred?', '+deferred+' deferred to the next pass':'')+(issues.length?'; '+issues.join(' | '):'');
+  return {kind:'reconcile',message:summary,status:counts.conflict+counts.attention>0?'blocked':'success'};
  }
 
  private previewTask(rule:{label?:string;decision:Parameters<typeof normalizeDecision>[0]}):Task {

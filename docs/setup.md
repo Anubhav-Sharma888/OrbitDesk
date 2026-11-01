@@ -43,7 +43,7 @@ All app-owned records (settings, connections metadata, conversations, messages, 
 
 ## Troubleshooting
 
-- `SETUP_REQUIRED: Set the STORAGE_SPREADSHEET_ID...` — the property is missing or the spreadsheet needs at least one worksheet.
+- `SETUP_REQUIRED: Set the STORAGE_SPREADSHEET_ID...` — the property is missing or the spreadsheet needs at least one worksheet. Because storage opens before the app service, this surfaces as an error alert (not the in-app SETUP banner); the banner's `setupRequired` list covers checks made once the service is up (currently OAuth client credentials).
 - `UNAUTHORIZED: Owner access required` — you are signed into a different Google account than `OWNER_EMAIL`.
 - `BUSY` — another web/trigger execution holds the script lock; retry shortly.
-- Browser shows the SETUP banner — check `state.app.setupRequired` in Settings; it lists exactly what is missing.
+- Browser shows the SETUP banner — check `state.app.setupRequired`; it lists what the configured setup checks found (OAuth client credentials). A missing storage spreadsheet appears as the SETUP_REQUIRED error above instead.

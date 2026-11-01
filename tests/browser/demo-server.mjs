@@ -71,6 +71,15 @@ function json(res,status,body){
  res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});
  res.end(JSON.stringify(body));
 }
+// CSRF guard for the local demo: browsers attach an Origin header to POSTs;
+// if one is present it must be this server's own origin (curl and other
+// non-browser clients send no Origin and are unaffected). The demo holds no
+// credentials and binds 127.0.0.1, so this is defense in depth, not a
+// production control.
+function sameOrigin(req){
+ const origin=req.headers.origin;
+ return origin===undefined||origin===`http://${host}:${port}`;
+}
 async function readJsonBody(req){
  let raw='';
  for await(const chunk of req){
@@ -84,6 +93,7 @@ const server=createServer(async(req,res)=>{
  try{
   const url=new URL(req.url??'/',`http://${host}:${port}`);
   if(req.method==='POST'&&url.pathname==='/api/rpc'){
+   if(!sameOrigin(req))return json(res,403,{ok:false,error:{code:'FORBIDDEN_ORIGIN',message:'Cross-origin requests are not accepted by the local demo'}});
    const parsed=await readJsonBody(req);
    if(parsed.error)return json(res,parsed.error.status,parsed.error.body);
    try{return json(res,200,backend.handle(parsed.value))}
@@ -97,6 +107,7 @@ const server=createServer(async(req,res)=>{
    // started with ORBITDESK_DEMO_ALLOW_RESET=1 (and the server only ever
    // binds 127.0.0.1). Default deployments expose none of these.
    if(!allowReset)return json(res,404,{ok:false,error:{code:'NOT_FOUND',message:'Not found'}});
+   if(!sameOrigin(req))return json(res,403,{ok:false,error:{code:'FORBIDDEN_ORIGIN',message:'Cross-origin requests are not accepted by the local demo'}});
    const parsed=await readJsonBody(req);
    if(parsed.error)return json(res,parsed.error.status,parsed.error.body);
    if(url.pathname==='/api/demo/reset'){

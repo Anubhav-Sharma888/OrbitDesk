@@ -120,6 +120,14 @@ test('rephraseShowsSuggestedWordingWithoutSaving',async({page,context})=>{
  await expect(page.getByLabel('Draft body')).toHaveValue('');
  expect(rpc.commands.filter(c=>c.type==='draft.save')).toHaveLength(0);expect(rpc.commands.filter(c=>c.type==='draft.send')).toHaveLength(0);
 });
+// Dead accounts expose no actions: Pause/Disconnect/background access always fail server-side
+// (NO_CONNECTION / MANUAL_CONNECTION_REQUIRED) for status:'disconnected'.
+test('disconnectedAccountHidesDeadActions',async({page,context})=>{
+ const rpc=new DemoRpc();rpc.state.accounts=[...rpc.state.accounts,{id:'gone',email:'old@example.test',label:'Old',status:'disconnected',capabilities:['mail.read'],paused:false}];await rpc.attach(context);await page.goto('/');await open(page,'Accounts');
+ const card=page.locator('.account-grid .panel',{hasText:'old@example.test'});
+ await expect(card.getByText('Disconnected. Connect again to use this account.',{exact:true})).toBeVisible();
+ await expect(card.getByRole('button')).toHaveCount(0);
+});
 test('rulePreviewKeepsUnsavedEditorValues',async({page,context})=>{
  const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Routing');await page.getByLabel('Rule name').fill('Keep this unsaved name');await page.getByLabel('Destination calendar').selectOption('personal|primary');await page.getByRole('button',{name:'Preview rule',exact:true}).click();await expect(page.getByTestId('route-preview')).toContainText('Personal calendar');await expect(page.getByLabel('Rule name')).toHaveValue('Keep this unsaved name');
 });

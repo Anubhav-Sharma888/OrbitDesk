@@ -107,7 +107,14 @@ export class OAuthBroker {
  }
  listConnections(actor:string):ConnectionView[]{
   this.assertOwner(actor);
-  return this.options.secrets.keys('connection:').map(key=>view(JSON.parse(this.options.secrets.get(key)!) as PrivateConnection));
+  const connections:ConnectionView[]=[];
+  // One corrupted connection property must never brick state projection: it is
+  // removed here (same tolerance as pending entries) instead of thrown.
+  for(const key of this.options.secrets.keys('connection:')){
+   try{connections.push(view(JSON.parse(this.options.secrets.get(key)!) as PrivateConnection))}
+   catch{this.options.secrets.remove(key)}
+  }
+  return connections;
  }
  access(id:string,capability:Capability,workflow:'manual'|'agent'='manual'):string {
   const c=this.read(id);
