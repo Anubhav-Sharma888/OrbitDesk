@@ -9,7 +9,7 @@ Node.js 24 or newer.
 ```sh
 npm ci --ignore-scripts
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (core/contracts/integration, no network)
+npm test            # vitest (tests/contracts + tests/integration, no network)
 npm run build       # dist/apps-script + dist/web + ESM test twin
 npm run test:browser  # Playwright; starts the labelled demo server automatically
 npm run preview     # same demo server alone, on 127.0.0.1:4174
