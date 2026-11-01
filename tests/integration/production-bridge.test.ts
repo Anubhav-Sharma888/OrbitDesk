@@ -136,6 +136,20 @@ it('importBridgeSelectsProvidersByCapability',async()=>{
  expect(env.httpCalls.filter(call=>call.url.includes(CLASSROOM)&&call.headers.Authorization==='Bearer token:svc-agent-b').length).toBeGreaterThan(0);
 });
 
+it('scheduledRoundsPollAccountsWithBackgroundOnlyReadCaps',async()=>{
+ // Scheduler eligibility must consider background capabilities on scheduled
+ // rounds: an account whose MANUAL grant has no read permission but whose
+ // background grant does is polled (requests re-validate per call).
+ seedWorkspace();
+ const state:CalendarState={events:new Map()};
+ env.onRequest(calendarHandler(state));
+ seedConnection(connection('google:background-only','svc-manual-bg','svc-agent-bg',['calendar.list'],['mail.read']));
+ const result=await runScheduledSync();
+ expect(result.status).toBe('ok');
+ expect(env.httpCalls.filter(call=>call.url.includes(GMAIL)&&call.headers.Authorization==='Bearer token:svc-agent-bg').length).toBeGreaterThan(0);
+ expect(env.httpCalls.filter(call=>call.url.includes(CLASSROOM)&&call.headers.Authorization==='Bearer token:svc-agent-bg')).toHaveLength(0);
+});
+
 it('pendingOperationIsDurableBeforeProviderCall',async()=>{
  seedWorkspace();
  const state:CalendarState={events:new Map()};
@@ -148,10 +162,12 @@ it('pendingOperationIsDurableBeforeProviderCall',async()=>{
  // At the moment the calendar HTTP insert fired, the pending operation row
  // must already be committed to the simulated Sheet (finding 4).
  expect(durability.pendingAtCall).toEqual([]); // RED today: whole pass buffered until the outer atomic commits
- // A second store instance over the same sheet sees the operation rows.
+ // A second store instance over the same sheet sees the completed operation
+ // rows for the real managed event ids.
  const second=new SheetRecordStore({readRows:()=>env.sheetRows.map(row=>row.slice()),writeRows:()=>{}}, {now:()=>Date.now(),iso:()=>new Date().toISOString()},<T,>(work:()=>T):T=>work());
- const operation=second.get('calendar_operation','od-anything');
- expect(operation===null||typeof operation.data==='object').toBe(true);
+ const createdEventId=[...state.events.keys()][0]!;
+ const operation=second.get<{status:string}>('calendar_operation',createdEventId);
+ expect(operation?.data.status).toBe('complete');
 });
 
 it('interruptionRecoveryWithoutDuplicateEvents',async()=>{

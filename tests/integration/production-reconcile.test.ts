@@ -134,6 +134,24 @@ it('orphanedLinksAreCleanedUpAfterTaskMerge',()=>{
  expect(env.store.list<{status:string}>('calendar_operation').every(r=>r.data.status==='complete')).toBe(true);
 });
 
+it('linkedQuarantinedTaskIsPausedNotCleaned',()=>{
+ // A task that still owns a link but is quarantined (importedUnreviewed via a
+ // bundle import) is paused: no writes, no per-pass conflict noise, and it is
+ // never mistaken for an orphaned link.
+ const env=reconcileFixture();
+ const task=seedRoutedTask(env,1)!;
+ saveRule(env,'rule-1',0,{},{mode:'automatic',destinations:[primary(env)]});
+ syncNow(env,'create');
+ expect(posts(env.fake)).toHaveLength(1);
+ const row=env.store.get<{version:number;data:Task}>('tasks',task.id)!;
+ env.store.put('tasks',task.id,{...row.data,importedUnreviewed:true},row.version);
+ syncNow(env,'paused');
+ expect(env.fake.writes.length).toBe(1); // no further writes (pause is not removal)
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===task.id)).toBe(true); // link intact
+ const activity=env.store.list<{kind:string;message:string}>('activity').filter(r=>r.data.kind==='reconcile')[1]!;
+ expect(activity.data.message).toContain('0 needing attention'); // no recurring conflict noise
+});
+
 it('leaseReleaseHonorsTheHolderToken',()=>{
  // Two service instances share one store (two executions, one workspace) and
  // one id generator — production uses UUIDs, so per-execution counters would

@@ -436,7 +436,12 @@ export class AppService {
   // task. The reconciler needs no task row for cleanup — ownership comes from
   // the link row itself.
   const candidateIds=new Set(candidates.map(t=>t.id));
-  const orphanIds=[...new Set(this.deps.store.list<{taskId:string}>('calendar_link').map(r=>r.data.taskId))].filter(id=>!candidateIds.has(id));
+  // Orphans are link-owning task ids with NO task row at all (e.g. a merge
+  // loser). A linked task whose row exists but is quarantined
+  // (importedUnreviewed) is deliberately left untouched — pause semantics,
+  // not cleanup — so it must not be mistaken for an orphan.
+  const orphanIds=[...new Set(this.deps.store.list<{taskId:string}>('calendar_link').map(r=>r.data.taskId))]
+   .filter(id=>!candidateIds.has(id)&&!this.deps.store.get('tasks',id));
   const orphans=new Set(orphanIds);
   for(const id of orphanIds)candidates.push({id,version:0,title:'',notes:'',status:'complete',kind:'manual',officialDue:{kind:'unknown'},sourceRefs:[],confidence:'clear',createdAt:'',updatedAt:''});
   candidates.sort((a,b)=>a.createdAt===b.createdAt?(a.id<b.id?-1:1):(a.createdAt<b.createdAt?-1:1));
