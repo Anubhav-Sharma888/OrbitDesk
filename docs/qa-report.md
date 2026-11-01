@@ -11,7 +11,7 @@ Scope: development branch `develop` at commit `40621a3` (session 2026-11-01). Al
 | Build | `npm run build` | pass — Apps Script IIFE + ESM twin + browser assets, "no credentials included" |
 | Browser, in-page contract harness | `npm run test:browser` | **14 passed / 14** |
 | Browser, backend-driven | `ORBITDESK_DEMO_ALLOW_RESET=1 node tests/browser/demo-server.mjs` + `ORBITDESK_BASE_URL=http://127.0.0.1:4174 npm run test:browser` | **13 passed, 1 skipped** — the AI-rephrase test skips by design: the demo backend keeps AI fail-closed (no key), so the flow is exercised in mock mode only |
-| Node | — | v22.23.4 (package.json requests >=24; npm does not enforce engines). Everything passed on Node 22; Node 24 binary is used by the Playwright webServer |
+| Node | — | v22.23.4 (package.json requests >=24; npm does not enforce engines). Everything passed on Node 22, including the Playwright webServer (`process.execPath`) |
 
 Demo curl evidence (server with `ORBITDESK_DEMO_ALLOW_RESET=1`, separate connections):
 - `state.get` → `mode:'demo'`, sample rows labelled "(sample)".
@@ -28,7 +28,7 @@ Demo curl evidence (server with `ORBITDESK_DEMO_ALLOW_RESET=1`, separate connect
 2. **Quality analyst** (independent, on `0b0e402`): verified every suite in both browser modes plus curl edge cases; no skipped tests; no secret-shaped fields in state responses; verdict "verified at the code-ready level". Two bookkeeping items (qa-report missing, disconnect test naming) — both closed since.
 3. **Security-privacy specialist** (independent, on `0b0e402`): no critical/high findings; 4 low findings + info notes, **all fixed with regression tests** in commit `a28c280` (login_hint binding, corrupt-pending and corrupt-connection row tolerance, portless outbound URLs, mkdtemp demo bundle, rephrase notice display, hook-state removal, demo CSRF guard).
 4. **Independent whole-project reviewer** (on `a28c280`): verdict "REQUEST CHANGES (narrow)" with 1 high + 1 medium + 10 low findings. **All addressed in commit `40621a3`**: the high finding (CalendarReconciler had no production caller — calendar routing never produced events end-to-end) is fixed by a bounded post-sync reconcile stage with 7 regression tests; the medium finding (missing qa-report.md) is this document; low findings were fixed or documented (see ledger).
-5. **Gold final review**: pending at the time of writing; its verdict and any fixes will be appended below by the coordinator.
+5. **Gold final review** (on `629e34a`): independently reproduced the full evidence chain (typecheck, 124/124 core, build, 14/14 browser default, 13+1-skip backend-driven, its own curl battery incl. guarded endpoints and cross-origin rejection) and audited the A/B/C readiness claims against the code. **Verdict: ACCEPT WITH MINOR FINDINGS** — no code change required. Findings and disposition: D1 (the ledger's push/PR line was recorded before the push; remedied by actually pushing `develop` and opening the PR this session), N1 (stale Node/webServer note — fixed), N2 ("all findings fixed" → "fixed or documented" — fixed), N3 (unnecessary-but-harmless webServer flag — left, documented). One live-checklist observation: in a trigger context the reconcile stage's calendar writes go through the manual-grant transport while import pages use the agent grant — the dedicated-test-calendar step must validate this path explicitly (noted in tomorrow-checklist.md).
 
 ## What this evidence does NOT establish
 
