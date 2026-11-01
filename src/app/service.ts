@@ -463,7 +463,19 @@ export class AppService {
   const pass=evaluated.slice(0,MAX_RECONCILE_TASKS),deferred=evaluated.length-pass.length;
   const counts={events:0,synced:0,conflict:0,attention:0,skipped:0};
   const issues:string[]=[];
+  // Supersession fencing: the lease is re-checked BEFORE each task so a pass
+  // whose lease expired and was taken over stops initiating NEW operations
+  // (a stale worker must not resurrect events that the current holder just
+  // removed). An operation already in flight still completes and records its
+  // durable outcome — prevention of new work, not un-sending requests.
+  const leaseToken=this.reconcileLeaseToken;
+  const leaseHeld=():boolean=>{
+   const row=this.deps.store.get<{expires:number;token?:string}>('reconcile_lease','owner');
+   return row!==null&&row.data.token===leaseToken&&row.data.expires>this.deps.clock.now();
+  };
+  let processed=0,supersededAfter=-1;
   for(const {task,decision} of pass){
+   if(!leaseHeld()){supersededAfter=processed;break}
    // Every non-review task reaches the reconciler: 'automatic' keeps the
    // managed event in step, while ignore/complete/dismiss transitions clean
    // up the OrbitDesk-owned mapping (the reconciler returns 'skipped' for
@@ -474,13 +486,14 @@ export class AppService {
    else if(result.status==='conflict')counts.conflict++;
    else counts.attention++; // blocked or unknown outcomes need owner attention
    if(result.error&&issues.length<3)issues.push(result.error.slice(0,140));
+   processed++;
   }
-  if(pass.length){
+  if(pass.length&&supersededAfter<0){
    const last=pass[pass.length-1].task;
    const row=this.deps.store.get<{last?:string}>('reconcile_cursor','owner');
    this.deps.store.put('reconcile_cursor','owner',{last:last.createdAt+':'+last.id},row?.version??null);
   }
-  const summary='Calendar reconcile: '+counts.events+' events, '+counts.synced+' synced, '+counts.conflict+' conflicts, '+counts.attention+' needing attention, '+counts.skipped+' skipped'+(deferred?', '+deferred+' deferred to the next pass':'')+(issues.length?'; '+issues.join(' | '):'');
+  const summary='Calendar reconcile: '+counts.events+' events, '+counts.synced+' synced, '+counts.conflict+' conflicts, '+counts.attention+' needing attention, '+counts.skipped+' skipped'+(deferred?', '+deferred+' deferred to the next pass':'')+(supersededAfter>=0?'; superseded after '+processed+' of '+pass.length+' tasks (lease lost); remaining tasks are retried by the current holder':'')+(issues.length?'; '+issues.join(' | '):'');
   return {kind:'reconcile',message:summary,status:counts.conflict+counts.attention>0?'blocked':'success'};
  }
 
