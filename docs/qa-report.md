@@ -50,6 +50,16 @@ Isolation greps on the rebuilt bundle: `/api/`, `__test`, `AIza`, `GOCSPX-`, `gs
 
 Gate 0 checklist corrected per review: the owner is offered the isolated `git archive` variant (never needs to touch shared dependencies), existing Google-side script properties must be preserved (add missing ones only; reuse an existing storage Sheet), the Sheets scope is described as account-wide by Google with the single storage file as an intended-use boundary rather than a technical limit, exact banner text is not promised, and Gate 1 rollback defaults to archiving the deployment while preserving the storage Sheet and properties (deletion is an explicitly last-resort data-discarding step). No code changes were needed for the installation; no integration-engineer correction required.
 
+## Step 5 — Windows-native continuation, 2026-11-01
+
+The full verification chain was re-run **Windows-natively** (PowerShell + Windows-native Node.js v24.22.1, npm 10.9.9, Git for Windows; no WSL, no Linux tooling) at commit `c954a50e422ae79c5b001e1c6aed2142c2366f57`:
+
+- **Main checkout:** typecheck 0 errors; `npm test` exit 0; `npm run build` exit 0; artifact SHA-256s identical to the recorded values (`6C7FCF1C…ED0EAB`, `F2966021…2AB88`, `C3CCD956…D8B6E`).
+- **Isolated clean install at the current commit:** `git archive --format=zip` → `Expand-Archive` (79 tracked files; no node_modules/dist), `npm ci --ignore-scripts` exit 0, typecheck clean, **143/143 tests (15 files, 0 skipped)**, build exit 0, artifact hashes identical to the recorded values, isolation greps (`/api/`, `__test`, `AIza`, `GOCSPX-`, `gsk_`, `BEGIN PRIVATE KEY`) all 0, `appsscript.json` byte-identical to `src/app/appsscript.json`.
+- **Host quirk confirmed natively:** `npm run` children inherit the Node runtime that launched npm (default Node v22.23.4 on this machine → `EBADENGINE` unless Node 24 is first on PATH); documented in setup.md with PowerShell guidance.
+
+Setup documentation now carries the Windows-native PowerShell instructions, the artifact-hash check (`Get-FileHash`), and the isolated clean-install variant. Gate 0 remains verified; Gate 1 (owner deployment + storage) is the next owner action. No merge, deployment, trigger installation, live provider operation, billing or credential access performed.
+
 ---
 
 # First milestone (1) — application integration, 2026-11-01

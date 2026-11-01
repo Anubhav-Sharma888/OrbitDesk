@@ -4,15 +4,39 @@ Status: code-ready development checkpoint. Deployment and live Google access req
 
 ## Local development
 
-Node.js 24 or newer.
+Node.js 24 or newer, Windows PowerShell (the project is developed and verified with Windows-native Node.js, npm and Git; no WSL or Linux tooling is used).
 
-```sh
+**Runtime caution (measured):** `npm run …` children inherit the Node runtime that launched npm. If `node -v` in your shell is older than 24, npm scripts run under it and fail with `EBADENGINE`. Fix: put a Node 24 installation first on `PATH` (or launch npm through its binary: `& "<Node24>\node.exe" "<npm>\npm-cli.js" run test`). Confirm with `node -v` in the same shell before running anything.
+
+```powershell
+node -v                                  # must print v24 or newer in THIS shell
+$env:PATH = "<Node24-install-dir>;" + $env:PATH   # if needed
 npm ci --ignore-scripts
 npm run typecheck   # tsc --noEmit
 npm test            # vitest (tests/contracts + tests/integration, no network)
 npm run build       # dist/apps-script + dist/web + ESM test twin
 npm run test:browser  # Playwright; starts the labelled demo server automatically
 npm run preview     # same demo server alone, on 127.0.0.1:4174
+```
+
+Artifact integrity (optional but recommended before deploying):
+
+```powershell
+Get-FileHash -Algorithm SHA256 dist\apps-script\Code.gs, dist\apps-script\Index.html, dist\apps-script\appsscript.json
+# At commit c954a50 these are:
+# Code.gs         6C7FCF1C6818F71596D763ECE60D3D9FF8AF1F70C12811EED1F356665AED0EAB
+# Index.html      F2966021AAA0A0210EE9FC2DE7C68330B2190F92B57EE76E3878D8B8CDC2AB88
+# appsscript.json C3CCD9560D912709762E6BE6044D0C21ABC514F0647CF33C5A16A3DD272D8B6E
+```
+
+Isolated clean-install variant (never touches your main checkout's `node_modules`):
+
+```powershell
+git archive --format=zip -o "$env:TEMP\orbitdesk-clean.zip" <commit>
+Expand-Archive "$env:TEMP\orbitdesk-clean.zip" "$env:TEMP\orbitdesk-clean"
+Set-Location "$env:TEMP\orbitdesk-clean"
+npm ci --ignore-scripts
+npm run typecheck; npm test; npm run build
 ```
 
 The local demo (`npm run preview`) runs the **real** application service and domain modules with simulated external providers. It binds 127.0.0.1 only, holds one shared in-memory store per process (open two browser windows: a task created in one is visible after refresh in the other — the phone/laptop continuity shape), labels every sample row "(sample)", and performs no network calls. Its reset/seed endpoints answer 404 unless the server was started with `ORBITDESK_DEMO_ALLOW_RESET=1`, and the demo code is never bundled into the Apps Script deployment.
