@@ -116,6 +116,46 @@ it('executionRoutingMatchesPreviewIncludingSources',()=>{
  expect(inserts[0].destination?.calendarId).toBe(preview.decision.destinations[0].calendarId);
 });
 
+it('orphanedLinksAreCleanedUpAfterTaskMerge',()=>{
+ // task-service.importSource merges duplicates and removes the loser row; the
+ // loser's calendar link and remote event must still be reconciled (cleanup
+ // needs no task row — ownership comes from the link row).
+ const env=reconcileFixture();
+ const task=seedRoutedTask(env,1)!;
+ saveRule(env,'rule-1',0,{},{mode:'automatic',destinations:[primary(env)]});
+ syncNow(env,'create');
+ expect(posts(env.fake)).toHaveLength(1);
+ // Simulate the merge loser removal (the exact store effect of importSource).
+ const row=env.store.get<{version:number}>('tasks',task.id)!;
+ env.store.remove('tasks',task.id,row.version);
+ syncNow(env,'cleanup');
+ expect(deletes(env.fake)).toHaveLength(1); // remote event removed
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===task.id)).toBe(false);
+ expect(env.store.list<{status:string}>('calendar_operation').every(r=>r.data.status==='complete')).toBe(true);
+});
+
+it('leaseReleaseHonorsTheHolderToken',()=>{
+ // Two service instances share one store (two executions, one workspace) and
+ // one id generator — production uses UUIDs, so per-execution counters would
+ // collide on activity row ids.
+ const store=new MemoryRecordStore(clock);
+ store.put('settings','owner',{timeZone:'Asia/Kolkata',automationEnabled:true,aiEnabled:false,aiConsent:false,accountDefaults:{},retentionDays:90},null);
+ const sharedIds=hexIds();
+ const build=()=>new AppService({owner,store,clock,ids:sharedIds,codec,http,broker:fakeBroker(),calendars:fakeCalendarPort().port,syncPort:{page:()=>({checkpoint:null,done:true,consumedCalls:1,items:0})}});
+ const first=build(),second=build();
+ // A live lease held by another execution must survive a skipped pass: the
+ // reconcile stage returns without releasing someone else's lease.
+ store.put<{expires:number;token?:string}>('reconcile_lease','owner',{expires:Date.parse('2026-11-01T00:09:00Z'),token:'other-execution'},null);
+ expect(first.runScheduledSync()).toMatchObject({status:'ok'}); // round runs; reconcile skipped (lease busy)
+ expect(store.get<{expires:number;token?:string}>('reconcile_lease','owner')!.data.token).toBe('other-execution');
+ // An expired leftover lease (crashed pass) is replaced by a fresh holder,
+ // whose release removes only its own lease.
+ const leftover=store.get<{expires:number;token?:string}>('reconcile_lease','owner')!;
+ store.put<{expires:number;token?:string}>('reconcile_lease','owner',{expires:Date.parse('2026-11-01T00:00:00Z')-1,token:'crashed-pass'},leftover.version);
+ expect(second.runScheduledSync()).toMatchObject({status:'ok'});
+ expect(store.get<{expires:number;token?:string}>('reconcile_lease','owner')).toBeNull();
+});
+
 it('managedEventLifecycleTransitions',()=>{
  const env=reconcileFixture();
  const taskA=seedRoutedTask(env,1)!;

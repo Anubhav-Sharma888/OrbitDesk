@@ -324,7 +324,12 @@ export class AppService {
   const settings=this.readSettings();
   if(!manual&&!settings.automationEnabled)return {pages:0,items:0,calls:0,stopped:'disabled'};
   if(manual&&!this.deps.broker)throw new AppError('SETUP_REQUIRED','Account connections are not configured in this environment');
-  const connections=this.deps.broker?this.deps.broker.listConnections(this.deps.owner):[];
+  const connections=(this.deps.broker?this.deps.broker.listConnections(this.deps.owner):[])
+   // A scheduled round polls through the background grant, so eligibility must
+   // consider background capabilities too; the import bridge and
+   // OAuthBroker.access re-validate the effective capabilities per request,
+   // so this only widens who is polled, never what is fetched.
+   .map(c=>manual?c:{...c,capabilities:[...new Set([...c.capabilities,...(c.backgroundCapabilities??[])])]});
   return this.scheduler.run(connections,manual?{manual:true}:{automationEnabled:settings.automationEnabled===true});
  }
 
@@ -386,19 +391,27 @@ export class AppService {
  // Coordination lease, deliberately NOT a storage transaction: it protects the
  // multi-step pass against overlapping executions while every data write
  // commits on its own (SheetRecordStore only flushes nested writes when the
- // outermost atomic ends, so nesting the pass would defer durability).
+ // outermost atomic ends, so nesting the pass would defer durability). The
+ // lease carries a holder token so a pass that overruns its expiry cannot
+ // delete the successor's lease on release.
+ private reconcileLeaseToken='';
  private acquireReconcileLease():boolean {
-  return this.deps.store.atomic(()=>{
-   const row=this.deps.store.get<{expires:number}>('reconcile_lease','owner');
+  const token=this.deps.ids.next();
+  const acquired=this.deps.store.atomic(()=>{
+   const row=this.deps.store.get<{expires:number;token?:string}>('reconcile_lease','owner');
    if(row&&row.data.expires>this.deps.clock.now())return false;
-   this.deps.store.put('reconcile_lease','owner',{expires:this.deps.clock.now()+600_000},row?.version??null);
+   this.deps.store.put('reconcile_lease','owner',{expires:this.deps.clock.now()+600_000,token},row?.version??null);
    return true;
   });
+  if(acquired)this.reconcileLeaseToken=token;
+  return acquired;
  }
  private releaseReconcileLease():void {
+  const token=this.reconcileLeaseToken;
+  this.reconcileLeaseToken='';
   this.deps.store.atomic(()=>{
-   const row=this.deps.store.get<{expires:number}>('reconcile_lease','owner');
-   if(row&&row.data.expires>this.deps.clock.now())this.deps.store.remove('reconcile_lease','owner',row.version);
+   const row=this.deps.store.get<{expires:number;token?:string}>('reconcile_lease','owner');
+   if(row&&row.data.token===token)this.deps.store.remove('reconcile_lease','owner',row.version);
   });
  }
 
@@ -416,6 +429,17 @@ export class AppService {
   const candidates=this.tasks.list()
    .filter(t=>!t.importedUnreviewed&&(t.status==='open'||linkedTasks.has(t.id)))
    .sort((a,b)=>a.createdAt===b.createdAt?(a.id<b.id?-1:1):(a.createdAt<b.createdAt?-1:1)); // oldest first
+  // A task that disappeared while still owning calendar links (its import was
+  // merged away into a duplicate, or its row was removed mid-pass) must not
+  // strand its managed events: synthesize a cleanup candidate so the pass
+  // removes the OrbitDesk-owned mappings exactly as it would for a dismissed
+  // task. The reconciler needs no task row for cleanup — ownership comes from
+  // the link row itself.
+  const candidateIds=new Set(candidates.map(t=>t.id));
+  const orphanIds=[...new Set(this.deps.store.list<{taskId:string}>('calendar_link').map(r=>r.data.taskId))].filter(id=>!candidateIds.has(id));
+  const orphans=new Set(orphanIds);
+  for(const id of orphanIds)candidates.push({id,version:0,title:'',notes:'',status:'complete',kind:'manual',officialDue:{kind:'unknown'},sourceRefs:[],confidence:'clear',createdAt:'',updatedAt:''});
+  candidates.sort((a,b)=>a.createdAt===b.createdAt?(a.id<b.id?-1:1):(a.createdAt<b.createdAt?-1:1));
   // Durable fair rotation: begin the bounded pass after the task the previous
   // pass processed last, so later tasks are considered even when older tasks
   // stay open, unchanged, blocked or review-only. The cursor is written on its
@@ -424,8 +448,13 @@ export class AppService {
   const cursorIndex=candidates.findIndex(t=>t.createdAt+':'+t.id===cursor);
   const start=cursorIndex<0?0:cursorIndex+1;
   const rotated=start>0?candidates.slice(start).concat(candidates.slice(0,start)):candidates;
-  const evaluated=rotated.map(task=>({task,decision:decideRoute(task,{rules,sources,accountDefaults:settings.accountDefaults})}))
-   .filter(entry=>entry.decision.decision.mode!=='review'); // review/pause never writes and keeps existing events
+  const evaluated=rotated.map(task=>{
+   // Orphaned-link cleanup candidates carry no task row: their decision is a
+   // synthetic ignore so the reconciler removes the OrbitDesk-owned mappings
+   // (ownership comes from the link row, so no destination is guessed).
+   if(orphans.has(task.id))return {task,decision:{decision:{mode:'ignore' as const,destinations:[]},reason:'Orphaned calendar links',errors:[]}};
+   return {task,decision:decideRoute(task,{rules,sources,accountDefaults:settings.accountDefaults})};
+  }).filter(entry=>entry.decision.decision.mode!=='review'); // review/pause never writes and keeps existing events
   const pass=evaluated.slice(0,MAX_RECONCILE_TASKS),deferred=evaluated.length-pass.length;
   const counts={events:0,synced:0,conflict:0,attention:0,skipped:0};
   const issues:string[]=[];
