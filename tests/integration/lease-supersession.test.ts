@@ -20,7 +20,7 @@ const T2='task:gmail:google:subject123:m2';
 const dest={connectionId:'google:subject123',calendarId:'google:subject123-calendar'};
 function hexIds(){let n=0;return {next:()=>'id'+(++n),hash:(v:string)=>Buffer.from(v).toString('hex')}}
 const codec={encodeBase64Url:(s:string)=>Buffer.from(s).toString('base64url'),decodeBase64Url:(s:string)=>Buffer.from(s,'base64url').toString('utf8'),encodeBase64:(s:string)=>Buffer.from(s).toString('base64')};
-function fakeBroker(clock:{now:()=>number}){return new OAuthBroker({owner,secrets:new MemorySecrets(),clock,ids:hexIds(),factory:{service:()=>({
+function fakeBroker(clock:import('../../src/shared/contracts.js').Clock){return new OAuthBroker({owner,secrets:new MemorySecrets(),clock,ids:hexIds(),factory:{service:()=>({
  authorizationUrl:()=>'https://accounts.google.com/o/oauth2/v2/auth?fixture=1',exchange:()=>true,
  identity:()=>({sub:'subject123',email:'student@example.com',emailVerified:true,scopes:['openid']}),
  accessToken:()=>'fixture-access-value',reset:()=>{}})}})}
