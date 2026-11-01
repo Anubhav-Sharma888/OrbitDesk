@@ -4,8 +4,13 @@ Updated by the coordinator. Per-agent detail lives in `docs/agent-status/<agent>
 
 | Agent / lane | Assignment | Owned files | Stage | Last action (evidence) | Current / next | Blocker |
 |---|---|---|---|---|---|---|
-| coordinator (acting as RED-test lead + implementer) | Reproduce findings 1–6 with failing behavioral tests, then fix | tests/integration/production-reconcile.test.ts, production-bridge.test.ts, storage-durability.test.ts, tests/helpers/appsscript-fakes.ts; then src/app/service.ts, src/app/entrypoints.ts | testing → RED COMPLETE | All 6 findings RED at defect sites (F1 10/12 posts; F2 wrong-rule destination; F5 no DELETE; F3 manual token on scheduled write; F6 0 classroom requests; F4 insert without pending row). Storage pins 3/3 green. Harness gaps fixed: SpreadsheetApp.flush, Utilities.DigestAlgorithm, test isolation (stale connection:* consumed the 3-page budget → stopped='round') | Committing RED suite; then fixes F3/F6 (entrypoints) and F1/F2/F5/F4 (service.ts) | none |
-| integration-engineer | (assigned RED phase) | — | **dispatch cancelled 2× by the harness before start** — work moved to coordinator lane; specialist reserved for review lanes | 2 cancellation notices | Review lane later | harness instability on Agent launches |
+| coordinator (RED + fixes, all six findings) | Reproduce → fix → verify | tests/integration/production-*.test.ts, tests/helpers/appsscript-fakes.ts, src/app/service.ts, src/app/entrypoints.ts, docs/operations.md | complete pending review | Node 24 fresh evidence: typecheck 0 errors, 135/135 core, build pass, browser 14/14 default + 13+1-skip backend-driven; all six RED tests now GREEN | Reviews: quality, security, independent, gold | none |
+| integration-engineer | (assigned RED phase) | — | **dispatch cancelled 2× by the harness before start** — work moved to coordinator lane | 2 cancellation notices | available for review lane | harness instability |
+| database-migration-specialist | F4 storage audit | read-only review lane | pending | — | after commit | none |
+| quality-analyst | Verify corrected behavior | read + targeted runs | pending | — | after commit | none |
+| security-privacy-specialist | Grant + durable-operation boundary review | read-only | pending | — | after commit | none |
+| independent-reviewer | Final correction diff | read-only | pending | — | after quality+security | none |
+| gold-final-reviewer | Milestone assessment | read-first | pending | — | last | none |
 | integration-engineer | (assigned RED phase) | — | **dispatch cancelled 2× by the harness before start** — work moved to coordinator lane; specialist reserved for review/fix lanes | 2 cancellation notices | Re-dispatch only for bounded later phases | harness instability on Agent launches |
 | database-migration-specialist | F4 storage audit + durability contract | src/storage/sheets-store.ts (if needed), docs/agent-status/… | pending | — | After RED lands | none |
 | backend-engineer | F3 workflow-aware calendar port + F6 capability bridge | src/app/entrypoints.ts, src/app/sync-bridge.ts (new, optional) | pending | — | After RED lands | none |

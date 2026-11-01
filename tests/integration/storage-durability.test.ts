@@ -23,16 +23,16 @@ function sheetHarness(){
 it('outerTransactionBuffersWritesUntilCommit',()=>{
  const h=sheetHarness();
  const outer=h.store();
- outer.put('tasks','t1',{title:'Before'},null);
+ outer.put<{title:string}>('tasks','t1',{title:'Before'},null);
  // Inside an outer atomic, a nested write must not reach the sheet yet.
  outer.atomic(()=>{
   outer.put('tasks','t1',{title:'Inside transaction'},1);
   const secondWhileOpen=h.store();
-  expect(secondWhileOpen.get('tasks','t1')!.data.title).toBe('Before'); // still the committed value
+  expect(secondWhileOpen.get<{title:string}>('tasks','t1')!.data.title).toBe('Before'); // still the committed value
  });
  // After commit the write becomes durable and visible.
  const second=h.store();
- expect(second.get('tasks','t1')!.data.title).toBe('Inside transaction');
+ expect(second.get<{title:string}>('tasks','t1')!.data.title).toBe('Inside transaction');
  // A crash before commit (simulated by discarding the working state) loses
  // nested writes entirely — which is why pending-operation writes must never
  // be nested inside a transaction that also spans a provider call.
@@ -41,14 +41,14 @@ it('outerTransactionBuffersWritesUntilCommit',()=>{
  store.put('tasks','x',{title:'Durable'},null);
  try{store.atomic(()=>{store.put('tasks','y',{title:'Lost'},null);throw new Error('process died')})}catch{/* interruption */}
  expect(crashed.store().get('tasks','y')).toBeNull();
- expect(crashed.store().get('tasks','x')!.data.title).toBe('Durable');
+ expect(crashed.store().get<{title:string}>('tasks','x')!.data.title).toBe('Durable');
 });
 it('topLevelWriteIsImmediatelyDurableForASecondStoreInstance',()=>{
  const h=sheetHarness();
  const first=h.store();
  first.put('calendar_operation','od1',{taskId:'t1',status:'pending'},null);
  const second=h.store();
- expect(second.get('calendar_operation','od1')!.data.status).toBe('pending');
+ expect(second.get<{status:string}>('calendar_operation','od1')!.data.status).toBe('pending');
 });
 it('failedSyncRoundLeavesNoPartialImportRows',()=>{
  // Imports are read-only remote operations, so the round-level transaction

@@ -53,6 +53,7 @@ function connection(id:string,serviceName:string,agentServiceName:string|undefin
 }
 function seedWorkspace(){
  env.sheetRows.length=0;
+ env.httpCalls.length=0; // request assertions are per-test
  env.sheetRows.push(SHEET_HEADER);
  env.sheetRows.push(['settings','owner',1,now,JSON.stringify({timeZone:'Asia/Kolkata',automationEnabled:true,aiEnabled:false,aiConsent:false,accountDefaults:{},retentionDays:90})]);
  env.properties['STORAGE_SPREADSHEET_ID']='sheet-1';
@@ -148,7 +149,7 @@ it('pendingOperationIsDurableBeforeProviderCall',async()=>{
  // must already be committed to the simulated Sheet (finding 4).
  expect(durability.pendingAtCall).toEqual([]); // RED today: whole pass buffered until the outer atomic commits
  // A second store instance over the same sheet sees the operation rows.
- const second=new SheetRecordStore({readRows:()=>env.sheetRows.map(row=>row.slice()),writeRows:()=>{}}, {now:()=>Date.now(),iso:()=>new Date().toISOString()},(work:()=>unknown)=>work());
+ const second=new SheetRecordStore({readRows:()=>env.sheetRows.map(row=>row.slice()),writeRows:()=>{}}, {now:()=>Date.now(),iso:()=>new Date().toISOString()},<T,>(work:()=>T):T=>work());
  const operation=second.get('calendar_operation','od-anything');
  expect(operation===null||typeof operation.data==='object').toBe(true);
 });

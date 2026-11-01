@@ -1,6 +1,35 @@
 # OrbitDesk QA report — 2026-11-01
 
-Scope: development branch `develop` at commit `40621a3` (session 2026-11-01). All checks were run on this commit by the coordinator and by an independent quality analyst on `0b0e402` (identical suites, smaller counts before the last two fix batches). **This is a code-ready verification, not a release, deployment or security certification, and not live Google validation.**
+Scope: development branch `develop`. The first milestone's evidence (below) was recorded at `40621a3`/`629e34a`; the corrective milestone's evidence follows in its own section. **This is a code-ready verification, not a release, deployment or security certification, and not live Google validation.**
+
+## Corrective milestone (2) — production-integration defects, 2026-11-01
+
+Six production-integration findings were investigated against current code, each reproduced with a failing behavioral test (RED) before fixing, on top of PR #1's branch (RED suite committed as `33a40fc`):
+
+1. **Fair reconciliation** — the bounded pass re-sliced the same oldest ten every pass; the last two of twelve were deferred forever. Fixed with a durable rotation cursor (`reconcile_cursor`): each pass starts after the task the previous pass processed last. Regression: `fairRotationEventuallyConsidersEveryTask` (12 tasks → 10 posts, then 12, restart-safe) and `reconcilePassIsBoundedAndRotatesFairly` (updated from the starvation-pinning test).
+2. **Routing consistency** — the reconcile pass called `decideRoute` WITHOUT source records, so sender rules never matched and keyword rules matched on titles/notes only — the reproduced failure wrote the event to the WRONG rule's destination. Fixed: execution now passes the same account-scoped `sources` context as routing preview. Regression: `executionRoutingMatchesPreviewIncludingSources`.
+3. **Background grant isolation** — `liveService(owner,'agent')` built `GoogleCalendar` on the MANUAL transport, so scheduled calendar operations used the manual grant and, without any background grant, still wrote. Fixed: the calendar port follows the selected workflow; `OAuthBroker.access` fails closed (BACKGROUND_GRANT_REQUIRED) with no fallback. Reproduced in production wiring (real `scheduledSync` over fakes): `scheduledReconcileUsesBackgroundGrant`, `missingBackgroundGrantFailsClosed`.
+4. **Durable remote-operation boundary** — the whole reconcile pass ran inside one `store.atomic`; SheetRecordStore buffers nested writes until the outer commit, so pending-operation rows were NOT durable at provider-call time (reproduced: insert fired with no pending row in the simulated Sheet). Fixed: coordination moved to a durable lease separate from storage transactions; each pending op commits before its provider call and its outcome after. Recovery tests: `pendingOperationIsDurableBeforeProviderCall`, `interruptionRecoveryWithoutDuplicateEvents`; storage semantics pinned by `storage-durability.test.ts` (buffered outer transactions, immediate top-level durability, rollback of read-only imports leaves no partial rows). The import/scheduler round-level transaction is documented as safe: imports are read-only remote operations, so rollback cannot undo a remote effect; sends already commit their pending state before the provider call.
+5. **Managed-event lifecycle** — the production pass filtered to open tasks and skipped non-automatic decisions, making the reconciler's cleanup paths unreachable (reproduced: no deletion after complete/dismiss/ignore, no recreation after restore). Fixed: candidates are open tasks plus any task that still owns calendar links whose decision is not review; the reconciler handles automatic keep-in-step, obsolete-mapping cleanup, restoration and destination moves. Regression: `managedEventLifecycleTransitions` (complete/dismiss/restore/ignore/route-change/review-pause).
+6. **Capability-aware import bridge** — the bridge attempted Gmail before Classroom for every connection (reproduced: a Classroom-only account made zero Classroom requests; a Gmail-only account's page failed after its Gmail work succeeded). Fixed: providers are selected from the connection's effective capabilities in the selected workflow; combined accounts get bounded fair progress (each provider ≥1 and ≤half the page allowance per page). Regression: `importBridgeSelectsProvidersByCapability` (all three capability combinations).
+
+Corrective-milestone verification (all run fresh on Node v24.22.1, the documented >=24 engine, serialized):
+
+| Check | Command | Result |
+|---|---|---|
+| TypeScript | `npm run typecheck` | 0 errors |
+| Core/contract/integration | `npm test` | **135 passed / 135** (14 files; 0 skipped) |
+| Build | `npm run build` | pass |
+| Browser (in-page harness) | `npm run test:browser` | **14 passed / 14** |
+| Browser (backend-driven) | flagged demo server + `ORBITDESK_BASE_URL` | **13 passed, 1 skipped** — the AI-rephrase test skips because the demo backend keeps AI fail-closed (no key); documented, not faked |
+
+Review trail for this milestone: quality-analyst verification, security-privacy review (grant and durable-operation boundaries), independent whole-diff review and the gold final assessment are recorded below once complete.
+
+---
+
+# First milestone (1) — application integration, 2026-11-01
+
+Scope: development branch `develop` at commit `40621a3` (session 2026-11-01). All checks were run on this commit by the coordinator and by an independent quality analyst on `0b0e402` (identical suites, smaller counts before the last two fix batches).
 
 ## Verification results (exact)
 

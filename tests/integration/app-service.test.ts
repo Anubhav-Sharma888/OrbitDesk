@@ -402,7 +402,9 @@ it('reviewModeDecisionsNeverWriteCalendarEvents',()=>{
  const row=okState(service.handle(actor,{type:'state.get',requestId:'y2',payload:{}})).activity.find(a=>a.kind==='reconcile')!;
  expect(row.status).toBe('success');
  expect(row.message).toContain('0 events');
- expect(row.message).toContain('1 skipped');
+ // Review-mode tasks are excluded from the bounded pass entirely: they are
+ // never written and never consume pass slots (pause is not removal).
+ expect(row.message).toContain('0 skipped');
 });
 
 it('importedUnreviewedTasksAreNeverReconciled',()=>{
@@ -442,7 +444,7 @@ it('reconcileConflictsAreContainedInTheActivitySummary',()=>{
  expect([...fake.events.values()][0].summary).toBe('Submit lab report 1'); // remote state untouched
 });
 
-it('reconcilePassIsBoundedToTenTasksPerRound',()=>{
+it('reconcilePassIsBoundedAndRotatesFairly',()=>{
  const {service,fake,connection,tasks}=reconcileFixture();
  for(let i=1;i<=12;i++)tasks.importSource(reconcileMail(connection.id,i));
  saveReconcileRule(service,connection.id,'automatic');
@@ -452,13 +454,14 @@ it('reconcilePassIsBoundedToTenTasksPerRound',()=>{
  const first=okState(service.handle(actor,{type:'state.get',requestId:'e1',payload:{}})).activity.filter(a=>a.kind==='reconcile')[0];
  expect(first.message).toContain('10 events');
  expect(first.message).toContain('2 deferred');
- // The next pass stays oldest-first: it re-verifies the same ten idempotently
- // (no duplicate events) and the remainder stays deferred until those tasks
- // leave the eligible set.
+ // Fair rotation: the next pass starts after the last task the previous pass
+ // processed, so the two deferred tasks are considered first (two new managed
+ // events) while the window's other eight re-verify idempotently.
  expect(service.runScheduledSync()).toEqual({status:'ok',pages:1,items:1});
- expect(fake.writes.filter(w=>w.method==='POST')).toHaveLength(10);
+ expect(fake.writes.filter(w=>w.method==='POST')).toHaveLength(12);
  const second=okState(service.handle(actor,{type:'state.get',requestId:'e2',payload:{}})).activity.filter(a=>a.kind==='reconcile')[1];
- expect(second.message).toContain('10 events');
+ expect(second.message).toContain('10 events'); // this pass's eventIds: 2 new + 8 re-verified
+ expect(second.message).toContain('0 conflicts');
  expect(second.message).toContain('2 deferred');
 });
 

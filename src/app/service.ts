@@ -357,24 +357,49 @@ export class AppService {
 
  // Bounded post-sync reconcile stage (operations.md). Pages never reconcile
  // (operations.md:9); this stage runs only after a sync round that finished its
- // pages ('complete' or 'time'), inside its own store.atomic, and records one
- // summarizing activity row. It acts only on open, reviewed tasks whose routing
- // decision is 'automatic' with explicit destinations the owner configured via
- // rule, item override or account default; review/ignore decisions never write.
- // Per-task failures (etag conflicts, unreachable calendars) are contained in
- // the summary and never break the sync result. LIVE CALENDAR MUTATIONS remain
- // gated by the human deployment checklist: the stage only acts through the
- // injected calendar port (live GoogleCalendar in production, a simulated port
- // in demo/local runs), and live writes may be enabled only after the live
- // checklist passes.
+ // pages ('complete' or 'time'), under a durable lease and with per-operation
+ // durability: each pending-operation row is committed on its own BEFORE its
+ // provider call and its outcome is recorded afterward, so an interruption
+ // never leaves an unrecorded calendar mutation and recovery replays
+ // idempotently (deterministic event IDs + remote state checks). It acts on
+ // open tasks plus any task that still owns calendar links whose routing
+ // decision is not 'review' — review leaves existing events untouched, while
+ // complete/dismiss/ignore/route-change reconcile obsolete OrbitDesk-owned
+ // mappings. Eligible tasks rotate fairly: a durable cursor starts each pass
+ // after the last task the previous pass processed, so later tasks eventually
+ // receive consideration even when older tasks stay open. LIVE CALENDAR
+ // MUTATIONS remain gated by the human deployment checklist: the stage only
+ // acts through the injected calendar port (live GoogleCalendar in production,
+ // a simulated port in demo/local runs), and live writes may be enabled only
+ // after the live checklist passes.
  private reconcileAfterSync(stopped:string):void {
   if(stopped!=='complete'&&stopped!=='time')return;
   try{
-   this.deps.store.atomic(()=>{
+   if(!this.acquireReconcileLease())return;
+   try{
     const entry=this.reconcilePass();
     if(entry)this.writeActivity(entry);
-   });
+   }finally{this.releaseReconcileLease()}
   }catch{/* reconcile is best-effort; the sync result and its shape stand */}
+ }
+
+ // Coordination lease, deliberately NOT a storage transaction: it protects the
+ // multi-step pass against overlapping executions while every data write
+ // commits on its own (SheetRecordStore only flushes nested writes when the
+ // outermost atomic ends, so nesting the pass would defer durability).
+ private acquireReconcileLease():boolean {
+  return this.deps.store.atomic(()=>{
+   const row=this.deps.store.get<{expires:number}>('reconcile_lease','owner');
+   if(row&&row.data.expires>this.deps.clock.now())return false;
+   this.deps.store.put('reconcile_lease','owner',{expires:this.deps.clock.now()+600_000},row?.version??null);
+   return true;
+  });
+ }
+ private releaseReconcileLease():void {
+  this.deps.store.atomic(()=>{
+   const row=this.deps.store.get<{expires:number}>('reconcile_lease','owner');
+   if(row&&row.data.expires>this.deps.clock.now())this.deps.store.remove('reconcile_lease','owner',row.version);
+  });
  }
 
  private reconcilePass():ActivityDraft {
@@ -382,22 +407,44 @@ export class AppService {
   if(!calendar)return {kind:'reconcile',message:'Calendar reconcile skipped: no writable calendar port is configured in this environment',status:'blocked'};
   const settings=this.readSettings();
   const rules=this.deps.store.list<UiState['routes'][number]>('routes').map(r=>({...r.data,version:r.version}));
+  // Routing execution must see the same account-scoped source records as
+  // routing preview: sender conditions and source-text keywords are evaluated
+  // against the stored sources, never guessed from titles alone.
+  const sources=this.deps.store.list<UiState['sources'][number]>('sources').map(r=>r.data);
   const reconciler=new CalendarReconciler(this.deps.store,calendar,this.deps.clock,this.deps.ids);
+  const linkedTasks=new Set(this.deps.store.list<{taskId:string}>('calendar_link').map(r=>r.data.taskId));
   const candidates=this.tasks.list()
-   .filter(t=>t.status==='open'&&!t.importedUnreviewed)
+   .filter(t=>!t.importedUnreviewed&&(t.status==='open'||linkedTasks.has(t.id)))
    .sort((a,b)=>a.createdAt===b.createdAt?(a.id<b.id?-1:1):(a.createdAt<b.createdAt?-1:1)); // oldest first
-  const pass=candidates.slice(0,MAX_RECONCILE_TASKS),deferred=candidates.length-pass.length;
+  // Durable fair rotation: begin the bounded pass after the task the previous
+  // pass processed last, so later tasks are considered even when older tasks
+  // stay open, unchanged, blocked or review-only. The cursor is written on its
+  // own after the pass (durable; a crashed pass simply re-picks the same set).
+  const cursor=this.deps.store.get<{last?:string}>('reconcile_cursor','owner')?.data.last??'';
+  const cursorIndex=candidates.findIndex(t=>t.createdAt+':'+t.id===cursor);
+  const start=cursorIndex<0?0:cursorIndex+1;
+  const rotated=start>0?candidates.slice(start).concat(candidates.slice(0,start)):candidates;
+  const evaluated=rotated.map(task=>({task,decision:decideRoute(task,{rules,sources,accountDefaults:settings.accountDefaults})}))
+   .filter(entry=>entry.decision.decision.mode!=='review'); // review/pause never writes and keeps existing events
+  const pass=evaluated.slice(0,MAX_RECONCILE_TASKS),deferred=evaluated.length-pass.length;
   const counts={events:0,synced:0,conflict:0,attention:0,skipped:0};
   const issues:string[]=[];
-  for(const task of pass){
-   const decision=decideRoute(task,{rules,accountDefaults:settings.accountDefaults});
-   if(decision.decision.mode!=='automatic'||!decision.decision.destinations.length){counts.skipped++;continue}
+  for(const {task,decision} of pass){
+   // Every non-review task reaches the reconciler: 'automatic' keeps the
+   // managed event in step, while ignore/complete/dismiss transitions clean
+   // up the OrbitDesk-owned mapping (the reconciler returns 'skipped' for
+   // no-op cases such as an unknown due time).
    const result=reconciler.reconcile(task,decision.decision);
    if(result.status==='synced'){counts.synced++;counts.events+=result.eventIds.length}
    else if(result.status==='skipped')counts.skipped++;
    else if(result.status==='conflict')counts.conflict++;
    else counts.attention++; // blocked or unknown outcomes need owner attention
    if(result.error&&issues.length<3)issues.push(result.error.slice(0,140));
+  }
+  if(pass.length){
+   const last=pass[pass.length-1].task;
+   const row=this.deps.store.get<{last?:string}>('reconcile_cursor','owner');
+   this.deps.store.put('reconcile_cursor','owner',{last:last.createdAt+':'+last.id},row?.version??null);
   }
   const summary='Calendar reconcile: '+counts.events+' events, '+counts.synced+' synced, '+counts.conflict+' conflicts, '+counts.attention+' needing attention, '+counts.skipped+' skipped'+(deferred?', '+deferred+' deferred to the next pass':'')+(issues.length?'; '+issues.join(' | '):'');
   return {kind:'reconcile',message:summary,status:counts.conflict+counts.attention>0?'blocked':'success'};

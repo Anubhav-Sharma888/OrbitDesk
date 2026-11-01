@@ -56,18 +56,25 @@ interface ReconcileEnv{store:MemoryRecordStore;service:AppService;fake:ReturnTyp
 function reconcileFixture():ReconcileEnv{
  const store=new MemoryRecordStore(clock);
  const broker=fakeBroker();const fake=fakeCalendarPort();const serviceIds=hexIds();
+ // The reconcile stage only runs after a completed round; seed automation on
+ // so runScheduledSync() drives the full round + reconcile stage.
+ store.put('settings','owner',{timeZone:'Asia/Kolkata',automationEnabled:true,aiEnabled:false,aiConsent:false,accountDefaults:{},retentionDays:90},null);
  const service=new AppService({owner,store,clock,ids:serviceIds,codec,http,broker,calendars:fake.port,syncPort:{page:()=>({checkpoint:null,done:true,consumedCalls:1,items:0})}});
  return {store,service,fake,connection:connect(broker),tasks:new TaskService(store,clock,serviceIds),serviceIds};
 }
 function saveRule(env:ReconcileEnv,ruleId:string,version:number,conditions:{sender?:string;keyword?:string;courseId?:string},decision:{mode:'automatic'|'review'|'ignore';destinations:{connectionId:string;calendarId:string}[]},priority=0){
  return okValue(env.service.handle(actor,{type:'route.save',requestId:'rule-'+ruleId+'-'+version,payload:{rule:{...(version>0?{id:ruleId}:{}) ,label:'Rule '+ruleId+' v'+version,sourceConnectionIds:[env.connection.id],priority,enabled:true,conditions,decision},...(version>0?{version}:{})}}));
 }
-function seedRoutedTask(env:ReconcileEnv,index:number,extraText=''):Task{
+function seedRoutedTask(env:ReconcileEnv,index:number,extraText=''):Task|null{
  const item=source(env.connection.id,index,extraText);
  env.store.put('sources','gmail:'+env.connection.id+':m'+index,item,null);
  return env.tasks.importSource(item);
 }
-function syncNow(env:ReconcileEnv,requestId:string){return env.service.handle(actor,{type:'sync.now',requestId,payload:{}})}
+// The reconcile stage runs after a COMPLETED sync round. Driving it through
+// runScheduledSync() (the same stage the trigger uses) avoids the durable
+// 15-second manual-sync throttle, which would otherwise gate out every pass
+// after the first — the throttle itself is covered by app-service tests.
+function syncNow(env:ReconcileEnv,requestId:string){void requestId;return env.service.runScheduledSync()}
 function posts(fake:ReturnType<typeof fakeCalendarPort>){return fake.writes.filter(w=>w.method==='POST')}
 function deletes(fake:ReturnType<typeof fakeCalendarPort>){return fake.writes.filter(w=>w.method==='DELETE')}
 const primary=(env:ReconcileEnv)=>({connectionId:env.connection.id,calendarId:env.connection.id+'-calendar'});
@@ -76,25 +83,25 @@ const secondary=(env:ReconcileEnv)=>({connectionId:env.connection.id,calendarId:
 it('fairRotationEventuallyConsidersEveryTask',()=>{
  const env=reconcileFixture();
  saveRule(env,'rule-1',0,{},{mode:'automatic',destinations:[primary(env)]});
- const created=Array.from({length:12},(_,i)=>seedRoutedTask(env,i+1));
+ const created=Array.from({length:12},(_,i)=>seedRoutedTask(env,i+1)!);
  syncNow(env,'pass-1');
  expect(posts(env.fake)).toHaveLength(10); // bounded pass
  // The second pass must consider the two still-waiting tasks instead of
  // re-slicing the same first ten.
  syncNow(env,'pass-2');
- const linked=new Set(env.store.list('calendar_link').map(r=>r.data.taskId));
+ const linked=new Set(env.store.list<{taskId:string}>('calendar_link').map(r=>r.data.taskId));
  expect(posts(env.fake)).toHaveLength(12); // RED today: stays 10 — the last two are deferred forever
  for(const task of created)expect(linked.has(task.id)).toBe(true);
  // Restart safety: a new service instance over the same store must not duplicate or lose events.
  const restarted=new AppService({owner,store:env.store,clock,ids:hexIds(),codec,http,broker:fakeBroker(),calendars:env.fake.port,syncPort:{page:()=>({checkpoint:null,done:true,consumedCalls:1,items:0})}});
  restarted.handle(actor,{type:'sync.now',requestId:'pass-3',payload:{}});
  expect(posts(env.fake)).toHaveLength(12);
- expect(env.store.list('calendar_link')).toHaveLength(12);
+ expect(env.store.list<{taskId:string}>('calendar_link')).toHaveLength(12);
 });
 
 it('executionRoutingMatchesPreviewIncludingSources',()=>{
  const env=reconcileFixture();
- const task=seedRoutedTask(env,1,'containing the secret-phrase in the body');
+ const task=seedRoutedTask(env,1,'containing the secret-phrase in the body')!;
  // The sender rule outranks the keyword rule; the keyword only exists in the stored source text.
  saveRule(env,'rule-sender',0,{sender:'Lecturer <teacher@example.com>'},{mode:'automatic',destinations:[primary(env)]},10);
  saveRule(env,'rule-keyword',0,{keyword:'secret-phrase'},{mode:'automatic',destinations:[secondary(env)]},5);
@@ -111,18 +118,18 @@ it('executionRoutingMatchesPreviewIncludingSources',()=>{
 
 it('managedEventLifecycleTransitions',()=>{
  const env=reconcileFixture();
- const taskA=seedRoutedTask(env,1);
- const taskB=seedRoutedTask(env,2);
+ const taskA=seedRoutedTask(env,1)!;
+ const taskB=seedRoutedTask(env,2)!;
  saveRule(env,'rule-1',0,{},{mode:'automatic',destinations:[primary(env)]});
  syncNow(env,'initial');
  expect(posts(env.fake)).toHaveLength(2);
- const eventA=env.store.get('calendar_link',managedEventId(taskA.id,primary(env),env.serviceIds))!.data.eventId;
+ const eventA=env.store.get<{taskId:string;eventId:string}>('calendar_link',managedEventId(taskA.id,primary(env),env.serviceIds))!.data.eventId;
  // (a) completion removes the obsolete managed event (ownership verified).
  const doneA=okValue<{version:number}>(env.service.handle(actor,{type:'task.complete',requestId:'done-a',payload:{id:taskA.id,version:1}}));
  syncNow(env,'after-complete');
  expect(deletes(env.fake)).toHaveLength(1); // RED today: 0 — completed tasks never reach the reconciler
  expect(env.fake.events.has(eventA)).toBe(false);
- expect(env.store.list('calendar_link').some(r=>r.data.taskId===taskA.id)).toBe(false);
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===taskA.id)).toBe(false);
  // (b) dismissal removes it too.
  okValue(env.service.handle(actor,{type:'task.dismiss',requestId:'dismiss-b',payload:{id:taskB.id,version:1}}));
  syncNow(env,'after-dismiss');
@@ -131,23 +138,23 @@ it('managedEventLifecycleTransitions',()=>{
  okValue(env.service.handle(actor,{type:'task.restore',requestId:'restore-b',payload:{id:taskB.id,version:2}}));
  syncNow(env,'after-restore');
  expect(posts(env.fake)).toHaveLength(3); // RED today: no new POST — restored tasks are filtered out
- expect(env.store.list('calendar_link').some(r=>r.data.taskId===taskB.id)).toBe(true);
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===taskB.id)).toBe(true);
  // (d) switching the task to an ignore override removes its event.
  const ignored=okValue<{version:number}>(env.service.handle(actor,{type:'task.update',requestId:'ignore-b',payload:{id:taskB.id,version:3,patch:{override:{mode:'ignore',destinations:[]}}}}));
  syncNow(env,'after-ignore');
- expect(env.store.list('calendar_link').some(r=>r.data.taskId===taskB.id)).toBe(false); // RED today
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===taskB.id)).toBe(false); // RED today
  // (e) a review decision leaves the existing event untouched (pause is not removal).
- const taskC=seedRoutedTask(env,3);
+ const taskC=seedRoutedTask(env,3)!;
  syncNow(env,'create-c');
- expect(env.store.list('calendar_link').some(r=>r.data.taskId===taskC.id)).toBe(true);
- okValue(env.service.handle(actor,{type:'task.update',requestId:'review-c',payload:{id:taskC.id,version:taskC.version+1,patch:{override:{mode:'review',destinations:[]}}}}));
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===taskC.id)).toBe(true);
+ const reviewed=okValue<{version:number}>(env.service.handle(actor,{type:'task.update',requestId:'review-c',payload:{id:taskC.id,version:taskC.version,patch:{override:{mode:'review',destinations:[]}}}}));
  const writesBeforeReview=env.fake.writes.length;
  syncNow(env,'review-pin');
  expect(env.fake.writes.length).toBe(writesBeforeReview);
  // (f) a route change moves the event: old destination deleted, new created, exactly one link remains.
- okValue(env.service.handle(actor,{type:'task.update',requestId:'move-c',payload:{id:taskC.id,version:taskC.version+2,patch:{override:{mode:'automatic',destinations:[secondary(env)]}}}}));
+ okValue(env.service.handle(actor,{type:'task.update',requestId:'move-c',payload:{id:taskC.id,version:reviewed.version,patch:{override:{mode:'automatic',destinations:[secondary(env)]}}}}));
  syncNow(env,'move-c');
- const links=env.store.list('calendar_link').filter(r=>r.data.taskId===taskC.id);
+ const links=env.store.list<{taskId:string;destination:Destination}>('calendar_link').filter(r=>r.data.taskId===taskC.id);
  expect(links).toHaveLength(1);
  expect(links[0].data.destination.calendarId).toBe(env.connection.id+'-calendar-2'); // RED today: old event lingers
  void doneA; void ignored;
