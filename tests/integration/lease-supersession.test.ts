@@ -47,6 +47,7 @@ function harness(withSheet:boolean){
    const event:CalendarEvent={...structuredClone(body),etag:'"1"'};
    events.set(body.id,event);
    writes.push({who,what:'POST',id:body.id});
+   if(who==='A'&&hookFired&&body.id===managedEventId(T2,dest,sharedIds))staleInsertT2=body.id;
    if(who==='A')afterInsert?.();
    return structuredClone(event);
   },
