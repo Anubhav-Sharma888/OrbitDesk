@@ -39,8 +39,12 @@ export class OAuthBroker {
   const now=this.options.clock.now();
   this.options.secrets.atomic(()=>{
    for(const key of this.options.secrets.keys('pending:')) {
-    const p=JSON.parse(this.options.secrets.get(key)!) as Pending;
-    if(p.expires<=now)this.options.secrets.remove(key);
+    // One corrupted property must never brick new connections: unparseable
+    // pending entries are removed instead of thrown (LOW-4).
+    try {
+     const p=JSON.parse(this.options.secrets.get(key)!) as Pending;
+     if(!p||typeof p.expires!=='number'||p.expires<=now)this.options.secrets.remove(key);
+    }catch{this.options.secrets.remove(key)}
    }
    if(this.options.secrets.keys('pending:').length>=10)throw new AppError('LINK_LIMIT','Finish or wait for an existing connection request');
   });
@@ -48,7 +52,9 @@ export class OAuthBroker {
   const pending:Pending={id,serviceName,owner:normalize(actor),expires:now+10*60_000,capabilities,workflow,...(hint?{hint:normalize(hint)}:{})};
   this.options.secrets.set('pending:'+id,JSON.stringify(pending));
   try {
-   const url=this.options.factory.service(serviceName,capabilities,workflow).authorizationUrl({pendingId:id});
+   // The hint rides in the state token and is forwarded to the factory so the
+   // authorization URL can bind Google's account chooser via login_hint (LOW-1).
+   const url=this.options.factory.service(serviceName,capabilities,workflow).authorizationUrl({pendingId:id,...(hint?{hint}:{})});
    if(!url.startsWith('https://accounts.google.com/'))throw new AppError('LINK_FAILED','Google sign-in could not be prepared');
    return {pendingId:id,serviceName,authorizationUrl:url};
   } catch {

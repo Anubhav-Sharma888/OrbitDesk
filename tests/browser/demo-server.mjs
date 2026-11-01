@@ -36,7 +36,7 @@
 import {createServer} from 'node:http';
 import {build} from 'esbuild';
 import {readFile} from 'node:fs/promises';
-import {unlinkSync} from 'node:fs';
+import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -49,11 +49,15 @@ const maxBodyBytes=10*1024*1024;
 
 // The demo backend is TypeScript, so bundle it to a temp ESM file once per
 // server process and import it exactly once. One import = one backend
-// instance = one shared workspace across all connections.
-const backendFile=join(tmpdir(),'orbitdesk-demo-backend-'+process.pid+'-'+Date.now()+'.mjs');
+// instance = one shared workspace across all connections. The bundle lives in
+// a fresh mkdtemp directory (random name, owner-only by platform defaults) so
+// a predictable path cannot be raced or symlinked by another local user; the
+// directory is removed on exit.
+const backendDir=mkdtempSync(join(tmpdir(),'orbitdesk-demo-'));
+const backendFile=join(backendDir,'demo-backend.mjs');
 await build({entryPoints:[resolve(root,'src/app/demo-backend.ts')],bundle:true,format:'esm',platform:'node',outfile:backendFile,logLevel:'silent'});
 const backendModule=await import(pathToFileURL(backendFile).href);
-process.on('exit',()=>{try{unlinkSync(backendFile)}catch{/* temp file cleanup is best-effort */}});
+process.on('exit',()=>{try{rmSync(backendDir,{recursive:true,force:true})}catch{/* temp cleanup is best-effort */}});
 
 let backend=backendModule.createDemoBackend();
 let clientCache=null;

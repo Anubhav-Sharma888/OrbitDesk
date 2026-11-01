@@ -279,3 +279,42 @@ it('invalidOverrideShapeIsStillRejected',()=>{
  const state=okState(service.handle(actor,{type:'state.get',requestId:'v3',payload:{}}));
  expect(state.tasks.find(t=>t.id===created.id)!.version).toBe(1);
 });
+
+it('disconnectRevokesTokenAccessAndStopsPollingForThatConnection',()=>{
+ const resets:string[]=[];
+ const secrets=new MemorySecrets();
+ // Each service name is bound to its own verified Google identity.
+ const subs=new Map<string,string>();
+ const factory={service:(name:string)=>{
+  if(!subs.has(name))subs.set(name,'sub'+subs.size);
+  const sub=subs.get(name)!;
+  return {
+   authorizationUrl:()=>'https://accounts.google.com/o/oauth2/v2/auth?fixture=1',
+   exchange:()=>true,
+   identity:()=>({sub,email:sub+'@example.com',emailVerified:true,scopes:['openid','https://www.googleapis.com/auth/gmail.readonly','https://www.googleapis.com/auth/userinfo.email']}),
+   accessToken:()=>'access-value-'+sub,
+   reset:()=>{resets.push(name)}
+  }}};
+ const broker=new OAuthBroker({owner,secrets,clock,ids:ids(),factory});
+ const connect=()=>{
+  const pending=broker.beginConnection(owner,['mail.read']);
+  return {pending,connection:broker.completeConnection(owner,{pendingId:pending.pendingId,serviceName:pending.serviceName,code:'x'}).connection!};
+ };
+ const a=connect(),b=connect();
+ const paged:string[]=[];
+ const {service}=fixture({broker,syncPort:{page:(connectionId)=>{paged.push(connectionId);return {checkpoint:null,done:true,consumedCalls:1,items:1}}}});
+ // RPC-level disconnect of account A only.
+ const disconnected=service.handle(actor,{type:'account.disconnect',requestId:'d1',payload:{id:a.connection.id}});
+ expect(disconnected.ok).toBe(true);
+ // (b) the status view shows the connection revoked and its token access is gone;
+ // the other account keeps working.
+ const view=okState(service.handle(actor,{type:'state.get',requestId:'d2',payload:{}})).accounts.find(x=>x.id===a.connection.id)!;
+ expect(view).toMatchObject({status:'disconnected',paused:true,capabilities:[]});
+ expect(()=>broker.access(a.connection.id,'mail.read')).toThrowError('Connection is not available');
+ expect(broker.access(b.connection.id,'mail.read')).toBe('access-value-sub1');
+ expect(resets).toContain(a.pending.serviceName);
+ // (a) a subsequent scheduler round never polls the disconnected connection id.
+ service.handle(actor,{type:'settings.save',requestId:'d3',payload:{settings:{timeZone:'Asia/Kolkata',automationEnabled:true,aiEnabled:false,aiConsent:false,accountDefaults:{},retentionDays:90}}});
+ expect(service.runScheduledSync()).toEqual({status:'ok',pages:1,items:1});
+ expect(paged).toEqual([b.connection.id]);
+});

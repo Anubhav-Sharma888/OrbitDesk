@@ -18,10 +18,11 @@ export class ScriptSecrets implements SecretStore {
  keys(prefix:string):string[]{return Object.keys(this.properties.getProperties()).filter(k=>k.startsWith(prefix))}
  atomic<T>(work:()=>T):T{return scriptAtomic(work)}
 }
-// Outbound server requests are restricted to the application's documented
-// provider endpoints. This allowlist is enforced at the only network sink in
-// the server bundle (defense in depth on top of GoogleTransport's origin and
-// path whitelists, and it also covers the OAuth identity lookup). Redirects
+// Outbound application requests are restricted to the documented provider
+// endpoints. AppsHttp is the guarded sink for those requests (defense in depth
+// on top of GoogleTransport's origin and path whitelists, and it also covers
+// the OAuth identity lookup); the vendored OAuth2.gs library performs its own
+// token exchange calls against pinned, constant Google endpoints. Redirects
 // are disabled and the scheme is fixed to https.
 const outboundHosts:Record<string,boolean>={
  'gmail.googleapis.com':true,
@@ -31,10 +32,17 @@ const outboundHosts:Record<string,boolean>={
  'api.groq.com':true
 };
 export function outboundHostAllowed(host:string):boolean {return outboundHosts[String(host).toLowerCase().replace(/\.$/,'')]===true}
+// All application endpoints are portless: any explicit :port after the host is rejected.
 export function outboundUrlAllowed(raw:string):boolean {
  if(!/^https:\/\//i.test(raw))return false;
- const host=raw.match(/^https:\/\/([^/:?#]+)(?::\d+)?(?:[/?#]|$)/i);
+ const host=raw.match(/^https:\/\/([^/:?#]+)(?:[/?#]|$)/i);
  return host!==null&&outboundHostAllowed(host[1]);
+}
+// Validates the optional account-chooser hint before it reaches the
+// authorization URL: a plausible email of at most 200 characters, else ignored.
+export function loginHintParam(params:Record<string,string>):string|null {
+ const hint=params&&typeof params.hint==='string'?params.hint.trim():'';
+ return hint&&hint.length<=200&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hint)?hint:null;
 }
 export class AppsHttp implements HttpPort {
  fetch(outbound:HttpRequest):HttpResponse {
@@ -85,7 +93,14 @@ export class AppsOAuthFactory {
    .setParam('prompt','consent select_account').setParam('include_granted_scopes','true')
    .setPropertyStore(properties).setCache(CacheService.getScriptCache()).setLock(lock);
   return {
-   authorizationUrl:(params:Record<string,string>)=>{service.generateCodeVerifier().setCodeChallengeMethod('S256');return service.getAuthorizationUrl(params) as string},
+   authorizationUrl:(params:Record<string,string>)=>{
+    service.generateCodeVerifier().setCodeChallengeMethod('S256');
+    // Bind Google's account chooser to the owner's hinted account when the hint
+    // is plausible; setParam values become authorization URL query parameters,
+    // while the params object itself is stored in the single-use state token.
+    const hint=loginHintParam(params);
+    if(hint)service.setParam('login_hint',hint);
+    return service.getAuthorizationUrl(params) as string},
    exchange:(callback:Record<string,string>)=>service.handleCallback({parameter:callback}) as boolean,
    identity:():GoogleIdentity=>{
     const response=new AppsHttp().fetch({url:'https://openidconnect.googleapis.com/v1/userinfo',method:'GET',headers:{Authorization:'Bearer '+service.getAccessToken()},followRedirects:false});

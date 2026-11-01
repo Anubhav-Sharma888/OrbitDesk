@@ -33,6 +33,9 @@ class DemoRpc {
      if(draft.version!==p.version)return error('VERSION_CONFLICT','This item changed on another device');
      if(!draft.userContent.trim()||!draft.body.trim()||p.instruction!=='send')return error('CONTENT_REQUIRED','Add your reply content before sending.');
      draft.status='sent';draft.version++;
+   } else if(command.type==='draft.rephrase'){
+     // Mirrors AiProposalService: the proposal comes back for display only; nothing is saved or sent.
+     value={summary:'Suggested wording',tasks:[],replyText:'Here is a suggested wording from the AI proposal.'};
    } else if(command.type==='route.preview'){
      // Mirrors RoutingService.preview: writability problems return ok:true inside value.errors, not an RPC error.
      const rule=p.rule as RoutingRule;
@@ -105,6 +108,17 @@ test('importedDraftShowsReviewGate',async({page,context})=>{
  await expect(page.getByText('was imported and has not been reviewed',{exact:false})).toHaveCount(0);
  await expect(page.getByRole('button',{name:'Save draft',exact:true})).toBeEnabled();
  expect(rpc.commands.filter(c=>c.type==='draft.save')[0].payload).toMatchObject({id:'draft-1',version:1,to:['colleague@example.test'],userContent:'Reviewed by me and ready.'});
+});
+// AI rephrase proposals run in mock mode only: app.aiConfigured is derived server-side
+// from a restricted key, so the real demo backend keeps rephrase fail-closed (button disabled).
+test('rephraseShowsSuggestedWordingWithoutSaving',async({page,context})=>{
+ test.skip(Boolean(process.env.ORBITDESK_BASE_URL),'Rephrase needs a configured AI key; the demo backend keeps AI fail-closed, so the button stays disabled there');
+ const rpc=new DemoRpc();rpc.state.app.aiConfigured=true;rpc.state.settings={...rpc.state.settings,aiEnabled:true,aiConsent:true};await rpc.attach(context);await page.goto('/');await open(page,'Replies');
+ await page.getByLabel('Your reply content').fill('I can join on Friday.');await page.getByLabel('Draft body').fill('I can join on Friday.');
+ await page.getByRole('button',{name:'Rephrase saved draft',exact:true}).click();
+ await expect(page.getByRole('status')).toContainText('Suggested wording (not saved): Here is a suggested wording from the AI proposal.');
+ await expect(page.getByLabel('Draft body')).toHaveValue('');
+ expect(rpc.commands.filter(c=>c.type==='draft.save')).toHaveLength(0);expect(rpc.commands.filter(c=>c.type==='draft.send')).toHaveLength(0);
 });
 test('rulePreviewKeepsUnsavedEditorValues',async({page,context})=>{
  const rpc=new DemoRpc();await rpc.attach(context);await page.goto('/');await open(page,'Routing');await page.getByLabel('Rule name').fill('Keep this unsaved name');await page.getByLabel('Destination calendar').selectOption('personal|primary');await page.getByRole('button',{name:'Preview rule',exact:true}).click();await expect(page.getByTestId('route-preview')).toContainText('Personal calendar');await expect(page.getByLabel('Rule name')).toHaveValue('Keep this unsaved name');
