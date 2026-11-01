@@ -35,6 +35,21 @@ Review trail for this milestone: **quality-analyst** verified the full chain on 
 
 **Verification (all on Node v24.22.1, serialized):** typecheck 0 errors; **143/143** core (15 files, 0 skipped); build pass; browser 14/14 default; 13 + 1 documented skip backend-driven; lease scenario 4/4. Review trail: quality-analyst (verified; 2 low nits fixed: Gate 1' error-code names, vacuous scenario assertion wired to the port writes log) → independent-reviewer (ACCEPT WITH MINOR FINDINGS; all traced supersession variants converge; recommendations applied: cursor read-modify-write in one atomic, value-pinned cursor assertion, message wording, operations.md supersession section, doc SHA/count fixes) → gold final review intentionally not re-run: the only material code change since the previous gold verdict is the lease fencing (~20 lines + 4 tests), reviewed independently with all recommendations applied verbatim and covered by the standing 143-test suite.
 
+## Step 4 — clean-install verification (Gate 0), 2026-11-01
+
+**VERIFIED, independently.** Tested commit `6d17cd2701056a2d32e90a152c89402e0ba237ff` (branch develop). Method: `git archive 6d17cd2 | tar -x` into an isolated temp copy (79 tracked files, byte-identical blob hashes recomputed per file; no node_modules/dist/credentials). Install: `npm ci --ignore-scripts` — exit 0, "added 46 packages, and audited 47 packages", `found 0 vulnerabilities`, lockfile unchanged; the shared local npm cache was permitted (a cold-cache run was NOT performed, so network independence is not proven — no network failure occurred). Checks, sequentially, on Node v24.22.1 / npm 10.9.9: typecheck 0 errors; **143/143 tests (15 files, 0 skipped)**; build pass.
+
+Artifacts (sha256, byte-reproducible across two environments and four consecutive builds — all hashes identical on every rebuild):
+- `dist/apps-script/Code.gs` → `6c7fcf1c6818f71596d763ece60d3d9ff8af1f70c12811eed1f356665aed0eab`
+- `dist/apps-script/Index.html` → `f2966021aaa0a0210ee9fc2de7c68330b2190f92b57ee76e3878d8b8cdc2ab88`
+- `dist/apps-script/appsscript.json` → `c3ccd9560d912709762e6be6044d0c21abc514f0647cf33c5a16a3dd272d8b6e` (byte-identical to `src/app/appsscript.json`)
+
+Isolation greps on the rebuilt bundle: `/api/`, `__test`, `AIza`, `GOCSPX-`, `gsk_`, `BEGIN PRIVATE KEY` — all 0. Quality-analyst independent verification: file-list and per-file blob-hash match against `git ls-tree -r 6d17cd2` (79/79), all three hashes match the devops records, rebuild determinism confirmed, main project untouched (HEAD unchanged, `status --porcelain` empty, `node_modules` mtimes predate the session).
+
+**Host quirk recorded (measured):** `npm run …` children inherit the Node runtime that launched npm — with the machine's default Node 22 the install printed `EBADENGINE` and was discarded; all verified runs launched npm through the Node 24 binary so script children run v24.22.1. Owner guidance added to Gate 0 of tomorrow-checklist.md.
+
+Gate 0 checklist corrected per review: the owner is offered the isolated `git archive` variant (never needs to touch shared dependencies), existing Google-side script properties must be preserved (add missing ones only; reuse an existing storage Sheet), the Sheets scope is described as account-wide by Google with the single storage file as an intended-use boundary rather than a technical limit, exact banner text is not promised, and Gate 1 rollback defaults to archiving the deployment while preserving the storage Sheet and properties (deletion is an explicitly last-resort data-discarding step). No code changes were needed for the installation; no integration-engineer correction required.
+
 ---
 
 # First milestone (1) — application integration, 2026-11-01

@@ -4,28 +4,33 @@ One checklist for the whole deployment-to-live path. Complete the gates **in ord
 
 **Standing rules:** zero additional expenditure (no billing activation, no paid tiers); automation and AI stay off unless a gate explicitly enables them; all local evidence was produced on Node v24.22.1 at Step 3 commit `2b51475` — expect **143/143 tests** at that commit (docs/qa-report.md); nothing here authorizes live sends or calendar mutations beyond the gate that names them.
 
-## Gate 0 — Local reproducibility (no Google access)
+## Gate 0 — Local reproducibility (no Google access) — VERIFIED on this machine at commit `6d17cd2`
 
-- **Where:** your machine, repo `C:\Anubhav Sharma\Projects\Automating Mailbox and Calender`, branch `develop` (commit `3906d9d`).
-- **Do:** `npm ci --ignore-scripts`, then `npm run typecheck && npm test && npm run build`.
-- **Expected:** typecheck 0 errors; **143/143 tests**; `dist/apps-script/` created (Code.gs + Index.html + appsscript.json). This is the reproducibility item the devops review could not verify for you; verify at commit `2b51475` or later.
-- **Verify safely:** `node --version` prints v24 or newer; the build's final line says "no credentials included".
-- **Rollback/recovery:** none needed — a failed step leaves no side effects; fix Node version (24+) and rerun.
+- **Where:** your machine, a checkout of branch `develop` at commit `6d17cd2` or later. On this laptop Gate 0 has already passed: an isolated copy (created with `git archive 6d17cd2`, no node_modules/dist/credentials) installed with `npm ci --ignore-scripts` and reproduced **143/143 tests** and a byte-identical build (artifact SHA-256s recorded in docs/qa-report.md, verified independently across two environments and four consecutive builds). Remaining owner value of this gate: prove it on YOUR machine/checkout before pasting anything into Google.
+- **Runtime caution (measured on this laptop):** `npm run …` children inherit the Node runtime that launched npm. If your default `node -v` is older than 24, npm scripts may run under it and fail with `EBADENGINE`. Check `node -v` first; if it is not v24+, either upgrade your default Node or launch npm through the Node 24 binary.
+- **Do (either way is fine; the isolated variant never touches shared dependencies):**
+  - Isolated (recommended): `git archive <commit> | tar -x -C <empty temp dir>`, then inside that copy `npm ci --ignore-scripts` and the checks below. Your main checkout's `node_modules` is untouched.
+  - Direct: in your checkout, `npm ci --ignore-scripts` (replaces your local `node_modules` with the lockfile state), then the checks.
+- **Checks:** `npm run typecheck && npm test && npm run build`.
+- **Expected:** typecheck 0 errors; **143/143 tests** (15 files); build prints "no credentials included" and creates `dist/apps-script/` (Code.gs + Index.html + appsscript.json). At `6d17cd2` the artifact SHA-256s were: Code.gs `6c7fcf1c…ed0eab`, Index.html `f2966021…2ab88`, appsscript.json `c3ccd956…d8b6e` (full values in docs/qa-report.md).
+- **Verify safely:** `node -v` ≥ 24 in the same shell; the artifact hashes match the recorded values.
+- **Rollback/recovery:** none needed — a failed step leaves no side effects; fix the Node version and rerun. `npm ci` in your own checkout only replaces that checkout's local dependencies.
 
 ## Gate 1 — Owner-only deployment + private storage
 
 - **Service/account:** Google Apps Script (script project `16gurcJgk7TdSw5d1G_HCpXbzNv62Nw0gOU5Q1HdqiOipLgQrLsu5QCFl`, project orbitdesk-personal-17826) with your **owner Gmail account** (anubhav17826@gmail.com).
 - **Purpose / minimum permission:** deploy the web app to yourself only, and create the private storage Sheet. No data access beyond the script's own Sheet.
 - **Do (in order):**
-  1. Apps Script editor → paste `dist/apps-script/Code.gs`, `dist/apps-script/Index.html`, `dist/apps-script/appsscript.json` (or `clasp push` if you use clasp).
-  2. Project Settings → Script Properties — add exactly: `OWNER_EMAIL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AGENT_CLIENT_ID`, `GOOGLE_AGENT_CLIENT_SECRET`, `STORAGE_SPREADSHEET_ID` (skip GROQ_* until Gate 6). Values come from your records/Google UI; **never from chat**.
-  3. Drive → New Google Sheet named "OrbitDesk storage"; open it, copy the ID from the URL, put it in `STORAGE_SPREADSHEET_ID`; keep the first worksheet empty.
+  1. Apps Script editor → paste `dist/apps-script/Code.gs`, `dist/apps-script/Index.html`, `dist/apps-script/appsscript.json` (or `clasp push` if you use clasp). If a previous OrbitDesk deployment exists, update the existing script files instead of creating a second project.
+  2. Project Settings → Script Properties — add any that are MISSING; **do not recreate or overwrite values that already exist** (your recorded `OWNER_EMAIL` and `GOOGLE_CLIENT_*` from the 2026-10-29 setup should be preserved as-is). Full list: `OWNER_EMAIL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AGENT_CLIENT_ID`, `GOOGLE_AGENT_CLIENT_SECRET`, `STORAGE_SPREADSHEET_ID` (skip GROQ_* until Gate 6). Values come from your records/Google UI; **never from chat**.
+  3. Drive → New Google Sheet named "OrbitDesk storage"; open it, copy the ID from the URL, put it in `STORAGE_SPREADSHEET_ID`; keep the first worksheet empty. (If a storage Sheet already exists from earlier setup, reuse it — do not create a second one.)
   4. Deploy → New deployment → Web app: execute as **Me**, who has access **Only myself**.
   1'. **Agent client (needed for Gate 5 only; may be deferred):** Google Cloud Console → Credentials → create a second OAuth client (Web application) for background sync, redirect `https://script.google.com/macros/d/<script id>/usercallback`, and put its ID/secret in the `GOOGLE_AGENT_*` properties. Until it exists, scheduled sync fails closed (`BACKGROUND_GRANT_REQUIRED` / `RECONNECT_REQUIRED`; no calendar write rides manual credentials); manual use is unaffected.
   1''. Optional (Gate 6 only): GROQ_API_KEY / GROQ_MODEL / GROQ_FREE_PLAN_CONFIRMED='true'.
-- **Expected:** deployment succeeds; opening the web app URL signed in as the owner shows OrbitDesk (or the SETUP banner listing exactly the missing properties).
-- **Verify safely:** open the web app → the dashboard renders; Settings shows `setupRequired` empty once properties are set; the storage Sheet stays empty until first save.
-- **Rollback:** Apps Script → Deployments → delete the deployment (or Archive); delete the storage Sheet; delete the script properties. Nothing external persists.
+- **Scopes you are agreeing to:** the script itself requests `script.external_request`, `userinfo.email` and `spreadsheets`. Note the Sheets scope is granted **account-wide by Google** — restricting it to the single storage file is an intended-use boundary, not a technical limit of the scope. The per-account Gmail/Calendar/Classroom access is separate and appears on each account's own consent screen at Gate 2 (only the capabilities you select are requested).
+- **Expected:** deployment succeeds; opening the web app URL signed in as the owner loads OrbitDesk. If any property is still missing you will see the amber setup banner in the app naming the missing configuration (exact banner text may vary — treat the list as the source of truth).
+- **Verify safely:** the app loads and the setup banner clears once all Gate 1 properties are set; the storage Sheet remains empty until the first save, after which it holds app-owned records (not credentials).
+- **Rollback:** Apps Script → Deployments → **Archive** the deployment (reversible; do not delete). **Keep the storage Sheet and script properties** — they hold your saved workspace and configuration and are reused by any later re-deploy. Deleting them is a last resort that discards saved data, not the default recovery.
 
 ## Gate 2 — Read-only account validation (first Google grant)
 
@@ -43,7 +48,7 @@ One checklist for the whole deployment-to-live path. Complete the gates **in ord
 - **Do:** connect the account with calendar capabilities; Settings → account default or a rule → the dedicated calendar (mode **automatic**); run **Sync now**; then complete/dismiss the task and confirm the event is removed; restore and confirm recreation; add a deliberately missing background grant check (Gate 5's client absent → scheduled context fails closed).
 - **Expected:** one managed event on the dedicated calendar (OrbitDesk-owned: description notes and deterministic id), removed on completion/dismissal, recreated on restore, moved on route change; review decisions leave it untouched; unwritable destination → error, no write.
 - **Verify safely:** eyeball the dedicated calendar; the app's Activity shows 'Calendar reconcile: …'; nothing on your other calendars.
-- **Rollback:** delete the test events (they are OrbitDesk-owned; deleting them remotely is safe — the next pass reports a conflict needing review); disconnect the account; delete the rule.
+- **Rollback:** delete the test events (they are OrbitDesk-owned; deleting them remotely is safe — the next pass reports a conflict needing review); disconnect the account; disable (not delete) the rule so the saved configuration survives.
 
 ## Gate 4 — Reply send validation (first email send)
 
