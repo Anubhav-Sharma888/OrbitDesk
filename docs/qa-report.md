@@ -62,6 +62,23 @@ Setup documentation now carries the Windows-native PowerShell instructions, the 
 
 **Correction record (2026-11-01):** the supervising review found the Index.html `/api/` line (the client's same-origin RPC fallback from src/ui/rpc-client.ts), and the isolation-grep claims above (Step 4 and Step 5) were corrected accordingly.
 
+## Step 6 — Gate 1 VERIFIED (owner-only deployment + private storage), 2026-11-15
+
+**Owner-observed evidence (guided sequence; every Google-side action performed by the owner):**
+- Project confirmed: Apps Script project "OrbitDesk", Script ID `16gurcJgk7TdSw5d1G_HCpXbzNv62Nw0gOU5Q1HdqiOipLgQrLsu5QCFl`, owner account anubhav17826@gmail.com; Apps Script reported **never deployed** before this gate.
+- Storage: new private Sheet "OrbitDesk storage" created; ID captured privately by the owner and configured as `STORAGE_SPREADSHEET_ID`.
+- Script files: the three hash-verified build artifacts (hashes re-confirmed in the moved checkout before guidance) were pasted into the project (Code.gs replaced; Index.html added; appsscript.json manifest) and saved.
+- Script properties: all four Gate 1 required properties verified present **by name only** (values never displayed): `OWNER_EMAIL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `STORAGE_SPREADSHEET_ID`.
+- OAuth consent screen: the test-users list was found **empty** — explaining an initial 403 access_denied. The owner added anubhav17826@gmail.com as a test user (Google Auth Platform → Audience; publishing status left on **Testing**, not published to production). The Auth Platform "Data access" page showed 0 configured scopes at that time (Apps Script registers manifest scopes at authorization).
+- Deployment: **Version 1, created 15 Nov 2026, 01:29**, web app Execute as Me / access Only myself.
+- **Granted scopes verified (owner, at myaccount.google.com/permissions):** exactly `userinfo.email`, `spreadsheets`, `script.external_request` — **no Gmail, Calendar, Classroom or unexpected permissions**.
+- **App load:** the dashboard loaded cleanly at the private /exec URL, no error text or credential-warning banners.
+- **Storage persistence (two independent smoke tests):** conversation "ABC" with message "hi", and conversation "Gate 1 smoke test" with message "storage verification record" — each created, then a hard reload (F5), then confirmed persisted in the private storage Sheet.
+
+**Verification status: GATE 1 VERIFIED.** All four required properties explicitly verified (not by banner disappearance), deployment owner-only, granted scopes exactly as documented, and app-owned records persist across full reloads.
+
+**Boundaries honored:** no Gmail/Calendar/Classroom grant, no sends, no calendar mutations, no background OAuth client, no triggers, no AI properties, automation off, billing untouched, PR #1 unmerged. **Gate 1 success does NOT validate live mail/calendar/Classroom integrations** — those are Gates 2–5. The checkout moved intact during this step to `C:\Anubhav Sharma\AVI Work Projects\Automating Mailbox and Calender` (develop = `a192f4b…` verified via `.git` file reads; remote/committer config correct). Host limitation recorded: the coordinator's shell (`C:\Program Files\Git\bin\bash.exe`) was unavailable throughout this step (`ENOENT`), so guidance proceeded in owner-executed mode — subagents could not run, and this documentation record is committed by the owner via the commands in the tracker/ledger.
+
 ---
 
 # First milestone (1) — application integration, 2026-11-01
