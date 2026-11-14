@@ -6,6 +6,10 @@ await mkdir('dist/apps-script',{recursive:true});await mkdir('dist/web',{recursi
 const vendor=await readFile('vendor/OAuth2.gs','utf8');
 if(createHash('sha256').update(vendor).digest('hex')!=='73e240cdf2ad217c97fbd864e150ffc380c2220b0f040fcaa6143a81ef58ad0d')throw new Error('OAuth2 vendor integrity mismatch');
 const server=await build({entryPoints:['src/app/entrypoints.ts'],bundle:true,format:'iife',globalName:'OrbitDeskServer',target:'es2020',platform:'neutral',write:false});
+// Testable twin: same entrypoint as ESM so verification can import it without
+// evaluating script text dynamically. Behavior checks run against this build;
+// the deployed IIFE above is additionally checked statically below.
+await build({entryPoints:['src/app/entrypoints.ts'],bundle:true,format:'esm',target:'es2020',platform:'neutral',outfile:'dist/testable/server.mjs'});
 const globals=['doGet','rpc','authCallback','scheduledSync'];
 const wrappers=globals.map(name=>'function '+name+'(argument) { return OrbitDeskServer.'+name+'(argument); }').join('\n');
 await writeFile('dist/apps-script/Code.gs',vendor+'\n'+server.outputFiles[0].text+'\n'+wrappers+'\n');

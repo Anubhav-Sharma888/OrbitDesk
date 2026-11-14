@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "threatModel": {
+    "inherit": true,
+    "assets": [],
+    "attackerControlledInputs": [],
+    "trustBoundaries": [],
+    "securityInvariants": [],
+    "exclusions": [
+      "src/ui/main.ts"
+    ]
+  },
+  "network": {
+    "allowedProtocols": [
+      "https:"
+    ],
+    "allowedHosts": [
+      "gmail.googleapis.com",
+      "www.googleapis.com",
+      "classroom.googleapis.com",
+      "openidconnect.googleapis.com",
+      "oauth2.googleapis.com",
+      "accounts.google.com",
+      "api.groq.com"
+    ],
+    "blockPrivateNetworks": true,
+    "maxRedirects": 0
+  },
+  "command": {
+    "forbidShell": true,
+    "allowedBinaries": []
+  },
+  "path": {
+    "allowedWriteRoots": [],
+    "requireBasename": true
+  },
+  "data": {
+    "allowedSortFields": [],
+    "requireOwnerScope": true
+  }
+}

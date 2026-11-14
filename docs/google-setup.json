@@ -1,0 +1,42 @@
+{
+  "checkedOn": "2026-10-29",
+  "owner": "anubhav17826@gmail.com",
+  "education": "anubhav.26ece@bmu.edu.in",
+  "activeProviders": [
+    "gmail",
+    "google-calendar",
+    "google-classroom"
+  ],
+  "excludedProviders": {
+    "microsoft": "User confirmed institution disabled it and removed it from active scope",
+    "whatsapp": "Deferred"
+  },
+  "cloudProjectId": "orbitdesk-personal-17826",
+  "cloudProjectNumber": "377622882608",
+  "billingLinked": false,
+  "billingVerification": "Google Cloud Billing page explicitly said this project has no billing account",
+  "scriptId": "16gurcJgk7TdSw5d1G_HCpXbzNv62Nw0gOU5Q1HdqiOipLgQrLsu5QCFl",
+  "scriptCloudProjectLinked": true,
+  "apisEnabled": [
+    "gmail.googleapis.com",
+    "calendar-json.googleapis.com",
+    "classroom.googleapis.com"
+  ],
+  "oauthBrand": "OrbitDesk",
+  "oauthAudience": "External",
+  "oauthStatus": "Testing",
+  "oauthClientName": "OrbitDesk Personal Web",
+  "oauthClientType": "Web application",
+  "redirectUri": "https://script.google.com/macros/d/16gurcJgk7TdSw5d1G_HCpXbzNv62Nw0gOU5Q1HdqiOipLgQrLsu5QCFl/usercallback",
+  "privatePropertiesVerifiedAfterReload": [
+    "OWNER_EMAIL",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET"
+  ],
+  "secretsExported": false,
+  "testUsers": "Two approved addresses submitted; saved table still needs verification",
+  "liveMailboxGrants": false,
+  "deployed": false,
+  "approval": "User explicitly approved API/user-data terms, API enablement, Cloud link, one Web client and these two test users. Mailbox access/calendar changes/sends excluded.",
+  "agentClientNote": "The current normal client is for manual/direct API access proof. Keep a separate agent client path for autonomous AI workflows per current Google guidance."
+}

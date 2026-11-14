@@ -5,7 +5,7 @@ export function sourceKey(s:Pick<SourceItem,'connectionId'|'type'|'id'|'courseId
 export function sourceRef(s:SourceItem):SourceRef {return {connectionId:s.connectionId,type:s.type,id:s.id,...(s.courseId?{courseId:s.courseId}:{}),...(s.courseworkId?{courseworkId:s.courseworkId}:{}),...(s.url?{url:s.url}:{})}}
 // Match observed Classroom alternateLink identities, never titles or decoded guesses about opaque web IDs.
 export function assignmentLink(value:string):string|null {
- const m=/^https:\/\/classroom\.google\.com(?:\/u\/\d+)?\/c\/([-A-Za-z0-9_]+)\/a\/([-A-Za-z0-9_]+)(?:\/(?:details|submissions))?(?:[?#][^\s<>"']*)?$/.exec(value);
+ const m=value.match(/^https:\/\/classroom\.google\.com(?:\/u\/\d+)?\/c\/([-A-Za-z0-9_]+)\/a\/([-A-Za-z0-9_]+)(?:\/(?:details|submissions))?(?:[?#][^\s<>"']*)?$/);
  return m?'https://classroom.google.com/c/'+m[1]+'/a/'+m[2]:null;
 }
 export function exactClassroomMatch(mail:SourceItem,work:SourceItem):boolean {
