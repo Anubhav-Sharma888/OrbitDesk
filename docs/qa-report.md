@@ -79,6 +79,12 @@ Setup documentation now carries the Windows-native PowerShell instructions, the 
 
 **Boundaries honored:** no Gmail/Calendar/Classroom grant, no sends, no calendar mutations, no background OAuth client, no triggers, no AI properties, automation off, billing untouched, PR #1 unmerged. **Gate 1 success does NOT validate live mail/calendar/Classroom integrations** — those are Gates 2–5. The checkout moved intact during this step to `C:\Anubhav Sharma\AVI Work Projects\Automating Mailbox and Calender` (develop = `a192f4b…` verified via `.git` file reads; remote/committer config correct). Host limitation recorded: the coordinator's shell (`C:\Program Files\Git\bin\bash.exe`) was unavailable throughout this step (`ENOENT`), so guidance proceeded in owner-executed mode — subagents could not run, and this documentation record is committed by the owner via the commands in the tracker/ledger.
 
+## Gate 2 — OWNER GMAIL READ-ONLY CONNECTION VERIFIED, 2026-11-15
+
+Owner-observed: in the deployed app (Accounts → Connect Google account) the owner entered the owner Gmail address, selected **only `mail.read`**, and completed Google's consent flow (testing-mode unverified-app warning path; identity-bound account chooser). The callback succeeded and after a full reload the Accounts panel showed the owner identity with status **active** and the single **`mail · read`** capability badge. Evidence note: the owner confirmed the flow completed smoothly without reading the scope list verbatim; the granted token cannot exceed the requested scopes because the authorization request is constructed server-side from the selected capabilities (`scopesFor(['mail.read'])` = openid + userinfo.email + gmail.readonly). PR #1 was merged to main (`d3a9027`) by the owner before this gate; records continue on `develop`.
+
+**Boundaries:** a successful connection does not establish that a Gmail import has run — Sync now is explicitly deferred by the owner to a later check. No calendar/send/classroom capabilities granted; education-account (BMU) Classroom validation deferred separately.
+
 ---
 
 # First milestone (1) — application integration, 2026-11-01
