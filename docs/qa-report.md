@@ -105,7 +105,7 @@ The owner's first **Sync now** failed closed with `STORAGE_CORRUPT: "A stored Or
 
 **Tracked UI gap (separate item, not fixed in this gate):** the Completed task state has **no direct Reopen/Restore control** — the live workaround was Dismiss → Restore. Dismissal keeps its designed remove-then-restore path; a small UI change would surface Restore for completed tasks too. Tracked for the next milestone.
 
-**Boundaries:** the lifecycle ran only against the disposable "OrbitDesk test" calendar; no sends, no Classroom, no background scheduling, no AI, automation switch untouched, billing untouched, PR #1 unmerged. Gate 3 proves the calendar write/lifecycle path live; it does not validate Gmail imports beyond the bounded read (run separately), sends, or scheduling.
+**Boundaries:** the lifecycle ran only against the disposable "OrbitDesk test" calendar; no sends, no Classroom, no background scheduling, no AI, automation switch untouched, billing untouched. PR #1 was merged to main at `d3a9027`; the Gate 2–3 records reach main through the current develop → main PR. Gate 3 proves the calendar write/lifecycle path live; it does not validate Gmail imports beyond the bounded read (run separately), sends, or scheduling.
 
 ---
 

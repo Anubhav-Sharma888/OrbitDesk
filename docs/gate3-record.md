@@ -14,4 +14,4 @@
 
 **Tracked UI gap (separate item):** the Completed task state has **no direct Reopen/Restore control** — the live workaround was Dismiss → Restore. Tracked for the next milestone.
 
-**Boundaries:** lifecycle ran only against the disposable "OrbitDesk test" calendar; no sends, no Classroom, no background scheduling, no AI, automation switch untouched, billing untouched, PR #1 unmerged. Gate 3 proves the calendar write/lifecycle path live; it does not validate Gmail imports (the bounded read ran separately), sends, or scheduling.
+**Boundaries:** lifecycle ran only against the disposable "OrbitDesk test" calendar; no sends, no Classroom, no background scheduling, no AI, automation switch untouched, billing untouched. PR #1 was merged to main at `d3a9027`; the Gate 2–3 commits reach main through the current develop → main PR. Gate 3 proves the calendar write/lifecycle path live; it does not validate Gmail imports (the bounded read ran separately), sends, or scheduling.
