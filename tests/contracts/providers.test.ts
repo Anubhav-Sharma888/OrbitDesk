@@ -2,6 +2,7 @@ import {it,expect} from 'vitest';
 import {GoogleTransport} from '../../src/providers/transport.js';
 import {GmailAdapter} from '../../src/providers/gmail.js';
 import {ClassroomAdapter} from '../../src/providers/classroom.js';
+import {GoogleCalendar,type CalendarOwnership} from '../../src/providers/google-calendar.js';
 import {ImportService} from '../../src/sync/imports.js';
 import {TaskService} from '../../src/tasks/task-service.js';
 import {MemoryRecordStore} from '../../src/storage/record-store.js';
@@ -24,3 +25,30 @@ it('gmailHtmlFallbackKeepsExactAssignmentLinksWithoutAttachments',()=>{const f=f
 it('mimeAlternativePrefersPlainEvenAfterLargeHtmlSibling',()=>{const f=fixture(()=>({status:200,json:{...message('m1'),payload:{mimeType:'multipart/alternative',parts:[{mimeType:'text/html',body:{data:codec.encodeBase64Url('<p>'+('x'.repeat(20000))+'</p>')}},{mimeType:'text/plain',body:{data:codec.encodeBase64Url('Please submit concise plain text')}}]}}}));expect(f.gmail.message('a','m1').text).toBe('Please submit concise plain text')});
 
 it('googleSubjectConnectionIdCanSyncWithoutWeakeningProviderIds',()=>{const f=fixture(r=>({status:200,json:r.url.includes('/profile')?{historyId:'anchor'}:r.url.includes('/messages?')?{messages:[{id:'m1'}]}:message('m1')}));f.imports.syncGmail('google:109821');expect(f.tasks.list()).toHaveLength(1);expect(f.calls.every(r=>r.headers.Authorization==='Bearer token-google:109821')).toBe(true);expect(()=>f.gmail.message('google:109821','other:message')).toThrow()});
+
+it('cancelledEventParseKeepsOwnershipMetadataSoRestoreCanVerifyIt',()=>{
+ // Live incident 2026-11-15: parseEvent stripped extendedProperties from
+ // cancelled events, so the restore arm's ownership assertion could never
+ // pass against the real provider (FOREIGN_EVENT on our own trashed event).
+ const ownership={orbitdesk:'v1',taskId:'task-1',routeKey:'route-1'} as const satisfies CalendarOwnership;
+ const calls:HttpRequest[]=[];
+ const transport=new GoogleTransport({access:()=>'token-a'} as never,{fetch:(r:HttpRequest):HttpResponse=>{calls.push(r);
+  if(r.method==='PATCH')return {status:200,json:{id:'odtest',etag:'"3"',summary:'Gate 3',start:{date:'2026-11-02'},end:{date:'2026-11-03'},extendedProperties:{private:ownership}}};
+  if(r.url.includes('/users/me/calendarList'))return {status:200,json:{items:[{id:'cal-1',accessRole:'owner'}]}};
+  return {status:200,json:{id:'odtest',etag:'"2"',status:'cancelled',start:{},end:{},extendedProperties:{private:ownership}}};
+ }} as never);
+ const calendar=new GoogleCalendar(transport);
+ const destination={connectionId:'a',calendarId:'cal-1'};
+ const trashed=calendar.get(destination,'odtest');
+ expect(trashed?.status).toBe('cancelled');
+ expect(trashed?.extendedProperties?.private).toEqual(ownership); // the parseEvent fix under test
+ const restored=calendar.restore(destination,{id:'odtest',summary:'Gate 3',description:'',start:{date:'2026-11-02'},end:{date:'2026-11-03'},extendedProperties:{private:ownership}},'"2"');
+ expect(restored.status).toBeUndefined(); // active again, not cancelled
+ expect(restored.extendedProperties?.private).toEqual(ownership);
+ const patch=calls.find(r=>r.method==='PATCH');
+ expect(patch).toBeTruthy();
+ expect(patch!.body).toBeTruthy();
+ expect(JSON.parse(String(patch!.body)).status).toBe('confirmed'); // restore requests the active state explicitly
+ expect(patch!.headers['If-Match']).toBe('"2"');
+ expect(()=>calendar.restore(destination,{id:'odtest',summary:'x',description:'',start:{date:'2026-11-02'},end:{date:'2026-11-03'},extendedProperties:{private:{orbitdesk:'v1',taskId:'other',routeKey:'other'}}},'"2"')).toThrow(/ownership/); // foreign cancelled event stays refused
+});

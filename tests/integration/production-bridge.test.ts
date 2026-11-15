@@ -7,7 +7,7 @@
 // bridge. These tests FAIL against the current code.
 import {it,expect,beforeAll,afterAll} from 'vitest';
 import {installAppScriptFakes,SHEET_HEADER,type FakeHttpRequest} from '../helpers/appsscript-fakes.js';
-import {SheetRecordStore} from '../../src/storage/sheets-store.js';
+import {AppsSheetPort,SheetRecordStore} from '../../src/storage/sheets-store.js';
 
 const owner='owner@example.com';
 const now='2026-11-01T00:00:00.000Z';
@@ -163,8 +163,10 @@ it('pendingOperationIsDurableBeforeProviderCall',async()=>{
  // must already be committed to the simulated Sheet (finding 4).
  expect(durability.pendingAtCall).toEqual([]); // RED today: whole pass buffered until the outer atomic commits
  // A second store instance over the same sheet sees the completed operation
- // rows for the real managed event ids.
- const second=new SheetRecordStore({readRows:()=>env.sheetRows.map(row=>row.slice()),writeRows:()=>{}}, {now:()=>Date.now(),iso:()=>new Date().toISOString()},<T,>(work:()=>T):T=>work());
+ // rows for the real managed event ids. Its readRows goes through the fake
+ // sheet's getValues so Google's apostrophe-stripping for text-forced cells
+ // (the writeRows date guard) is modeled exactly as in production.
+ const second=new SheetRecordStore(new AppsSheetPort(env.sheet as unknown as GoogleAppsScript.Spreadsheet.Sheet), {now:()=>Date.now(),iso:()=>new Date().toISOString()},<T,>(work:()=>T):T=>work());
  const createdEventId=[...state.events.keys()][0]!;
  const operation=second.get<{status:string}>('calendar_operation',createdEventId);
  expect(operation?.data.status).toBe('complete');

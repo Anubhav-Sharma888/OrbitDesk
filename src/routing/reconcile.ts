@@ -62,7 +62,19 @@ export class CalendarReconciler {
     const existing=this.calendar.get(destination,id);
     if(existing){
      if(existing.id!==id)throw new AppError('MALFORMED_PROVIDER','Google returned a different calendar event');
-     if(existing.status==='cancelled')throw new AppError('REMOTE_CONFLICT','The managed calendar event was deleted elsewhere');
+     if(existing.status==='cancelled'){
+      // A cancelled event at this deterministic id is only restorable when the
+      // link row is gone: OrbitDesk's own delete-cleanup always removes the
+      // link after a successful delete, so an absent link means this is our
+      // own earlier delete (the owner's Restore reopens the task). A link row
+      // that still exists means the deletion was external (the user deleted
+      // the event in Google Calendar) and must NOT be silently recreated.
+      if(row)throw new AppError('REMOTE_CONFLICT','The managed calendar event was deleted elsewhere');
+      assertCalendarOwnership(existing,owner);
+      this.write(id,{taskId:task.id,destination,eventId:id,ownership:owner,action:'update',status:'pending',body,expectedEtag:existing.etag,at:this.clock.iso()},()=>this.calendar.restore(destination,body,existing.etag));
+      result.eventIds.push(id);
+      continue;
+     }
      assertCalendarOwnership(existing,owner);
      const pending=this.store.get<CalendarOperation>('calendar_operation',id)?.data;
      const ownRecoveredWrite=pending&&pending.action!=='delete'&&['pending','unknown'].includes(pending.status)&&pending.body&&sameBody(existing,pending.body);
@@ -78,6 +90,12 @@ export class CalendarReconciler {
       try{return this.calendar.insert(destination,body)}catch(e){
        if(!(e instanceof AppError)||e.code!=='ALREADY_EXISTS')throw e;
        const found=this.calendar.get(destination,id);if(!found)throw new AppError('NETWORK_UNCERTAIN','The managed event exists but Google has not returned it yet');
+       if(found.status==='cancelled'){
+        // The id is reserved by our own earlier delete (Google trash): restore
+        // the trashed event to active with the current content instead of
+        // failing on the stale body comparison.
+        assertCalendarOwnership(found,owner);return this.calendar.restore(destination,body,found.etag);
+       }
        assertCalendarOwnership(found,owner);if(!sameBody(found,body))throw new AppError('REMOTE_CONFLICT','The existing managed calendar event differs from the pending creation');return found;
       }
      });

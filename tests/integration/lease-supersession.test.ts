@@ -58,7 +58,11 @@ function harness(withSheet:boolean){
   delete:(destination,id,etag:string)=>{
    const current=events.get(id);
    if(!current||current.etag!==etag)throw Object.assign(new Error('conflict'),{code:'REMOTE_CONFLICT'});
-   events.delete(id);writes.push({who,what:'DELETE',id})}});
+   events.delete(id);writes.push({who,what:'DELETE',id})},
+  restore:(destination,body:ManagedCalendarEvent,etag:string)=>{
+   const current=events.get(body.id);
+   if(!current||current.etag!==etag)throw Object.assign(new Error('conflict'),{code:'REMOTE_CONFLICT'});
+   const event:CalendarEvent={...structuredClone(body),etag:'"2"'};events.set(body.id,event);writes.push({who,what:'RESTORE',id:body.id});return structuredClone(event)}});
  const tasks=new TaskService(store,clock,sharedIds);
  for(const index of ['1','2']){store.put('sources','gmail:google:subject123:m'+index,item(index),null);tasks.importSource(item(index))}
  const connect=()=>{const broker=fakeBroker(clock);const pending=broker.beginConnection(owner,['mail.read']);broker.completeConnection(owner,{pendingId:pending.pendingId,serviceName:pending.serviceName,code:'x'});return broker};

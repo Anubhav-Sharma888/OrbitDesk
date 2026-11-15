@@ -4,7 +4,7 @@ export interface CalendarTime {date?:string;dateTime?:string;timeZone?:string}
 export interface CalendarOwnership {orbitdesk:'v1';taskId:string;routeKey:string}
 export interface CalendarEvent {id:string;etag:string;summary?:string;description?:string;start:CalendarTime;end:CalendarTime;status?:string;extendedProperties?:{private?:Record<string,string>};attendees?:unknown[];conferenceData?:unknown;recurrence?:unknown[];recurringEventId?:string}
 export interface ManagedCalendarEvent extends Omit<CalendarEvent,'etag'> {summary:string;description:string;extendedProperties:{private:CalendarOwnership & Record<string,string>}}
-export interface CalendarPort {listCalendars(connectionId:string):CalendarView[];get(destination:Destination,eventId:string):CalendarEvent|null;insert(destination:Destination,event:ManagedCalendarEvent):CalendarEvent;update(destination:Destination,event:ManagedCalendarEvent,etag:string):CalendarEvent;delete(destination:Destination,eventId:string,etag:string,ownership:CalendarOwnership):void}
+export interface CalendarPort {listCalendars(connectionId:string):CalendarView[];get(destination:Destination,eventId:string):CalendarEvent|null;insert(destination:Destination,event:ManagedCalendarEvent):CalendarEvent;update(destination:Destination,event:ManagedCalendarEvent,etag:string):CalendarEvent;delete(destination:Destination,eventId:string,etag:string,ownership:CalendarOwnership):void;restore(destination:Destination,event:ManagedCalendarEvent,etag:string):CalendarEvent}
 function record(value:unknown):Record<string,unknown> {if(!value||typeof value!=='object'||Array.isArray(value))throw new AppError('MALFORMED_PROVIDER','Google returned invalid calendar data');return value as Record<string,unknown>}
 export function assertCalendarOwnership(event:CalendarEvent,ownership:CalendarOwnership):void {
  const actual=event.extendedProperties?.private;
@@ -15,7 +15,7 @@ export function assertCalendarOwnership(event:CalendarEvent,ownership:CalendarOw
 function parseEvent(value:unknown):CalendarEvent {
  const item=record(value);
  if(typeof item.id!=='string'||typeof item.etag!=='string')throw new AppError('MALFORMED_PROVIDER','Google returned an invalid calendar event');
- if(item.status==='cancelled')return {id:item.id,etag:item.etag,status:'cancelled',start:{},end:{}};
+ if(item.status==='cancelled')return {id:item.id,etag:item.etag,status:'cancelled',start:{},end:{},...(item.extendedProperties?{extendedProperties:item.extendedProperties as CalendarEvent['extendedProperties']}:{}),...(Array.isArray(item.attendees)?{attendees:item.attendees}:{}),...(item.conferenceData!=null?{conferenceData:item.conferenceData}:{}),...(Array.isArray(item.recurrence)?{recurrence:item.recurrence}:{}),...(typeof item.recurringEventId==='string'?{recurringEventId:item.recurringEventId}:{})};
  const start=record(item.start),end=record(item.end);
  return {id:item.id,etag:item.etag,start:start as CalendarTime,end:end as CalendarTime,...(typeof item.summary==='string'?{summary:item.summary}:{}),...(typeof item.description==='string'?{description:item.description}:{}),...(item.extendedProperties?{extendedProperties:item.extendedProperties as CalendarEvent['extendedProperties']}:{}),...(Array.isArray(item.attendees)?{attendees:item.attendees}:{}),...(item.conferenceData!=null?{conferenceData:item.conferenceData}:{}),...(Array.isArray(item.recurrence)?{recurrence:item.recurrence}:{}),...(typeof item.recurringEventId==='string'?{recurringEventId:item.recurringEventId}:{})};
 }
@@ -67,6 +67,21 @@ export class GoogleCalendar implements CalendarPort {
   if(existing.etag!==etag)throw new AppError('REMOTE_CONFLICT','The managed calendar event changed elsewhere');
   const result=parseEvent(this.transport.request(destination.connectionId,'calendar',eventPath(destination,event.id)+'?sendUpdates=none','calendar.write','PATCH',body,{'If-Match':etag}));
   if(result.id!==event.id)throw new AppError('NETWORK_UNCERTAIN','Google did not confirm the requested event');
+  assertCalendarOwnership(result,body.extendedProperties.private);return result;
+ }
+ // Restore a trashed (status cancelled) OrbitDesk-owned event to active with
+ // the given content. Per the Calendar API reference, cancelled events on the
+ // organizer's calendar expose their details so they can be restored
+ // (undeleted); events.update replaces the whole resource, so the restore
+ // request carries status 'confirmed' explicitly.
+ restore(destination:Destination,event:ManagedCalendarEvent,etag:string):CalendarEvent {
+  this.writable(destination);const body=payload(event);const existing=this.get(destination,event.id);
+  if(!existing)throw new AppError('REMOTE_CONFLICT','The managed calendar event was removed elsewhere');
+  assertCalendarOwnership(existing,body.extendedProperties.private);
+  if(existing.etag!==etag)throw new AppError('REMOTE_CONFLICT','The managed calendar event changed elsewhere');
+  const result=parseEvent(this.transport.request(destination.connectionId,'calendar',eventPath(destination,event.id)+'?sendUpdates=none','calendar.write','PATCH',{...body,status:'confirmed'},{'If-Match':etag}));
+  if(result.id!==event.id)throw new AppError('NETWORK_UNCERTAIN','Google did not confirm the restored event');
+  if(result.status==='cancelled')throw new AppError('NETWORK_UNCERTAIN','Google did not confirm the event restoration');
   assertCalendarOwnership(result,body.extendedProperties.private);return result;
  }
  delete(destination:Destination,eventId:string,etag:string,ownership:CalendarOwnership):void {

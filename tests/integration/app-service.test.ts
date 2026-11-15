@@ -70,6 +70,13 @@ function fakeCalendarPort(){
    const k=key(destination,id),current=events.get(k);
    if(!current||current.etag!==etag)throw new AppError('REMOTE_CONFLICT','The managed calendar event changed elsewhere');
    events.delete(k);writes.push({method:'DELETE',etag});
+  },
+  restore:(destination,body,etag)=>{
+   const k=key(destination,body.id),current=events.get(k);
+   if(!current||current.etag!==etag)throw new AppError('REMOTE_CONFLICT','The managed calendar event changed elsewhere');
+   const event:CalendarEvent={...structuredClone(body),etag:'"2"'};
+   events.set(k,event);writes.push({method:'POST',body:structuredClone(body),etag});
+   return structuredClone(event);
   }
  };
  return {port,events,writes,setFailUpdate:(value:boolean)=>{failUpdate=value}};
