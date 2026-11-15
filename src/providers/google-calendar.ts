@@ -78,6 +78,7 @@ export class GoogleCalendar implements CalendarPort {
   this.writable(destination);const body=payload(event);const existing=this.get(destination,event.id);
   if(!existing)throw new AppError('REMOTE_CONFLICT','The managed calendar event was removed elsewhere');
   assertCalendarOwnership(existing,body.extendedProperties.private);
+  if(existing.status!=='cancelled')throw new AppError('REMOTE_CONFLICT','The managed calendar event is no longer cancelled');
   if(existing.etag!==etag)throw new AppError('REMOTE_CONFLICT','The managed calendar event changed elsewhere');
   const result=parseEvent(this.transport.request(destination.connectionId,'calendar',eventPath(destination,event.id)+'?sendUpdates=none','calendar.write','PATCH',{...body,status:'confirmed'},{'If-Match':etag}));
   if(result.id!==event.id)throw new AppError('NETWORK_UNCERTAIN','Google did not confirm the restored event');
@@ -86,8 +87,13 @@ export class GoogleCalendar implements CalendarPort {
  }
  delete(destination:Destination,eventId:string,etag:string,ownership:CalendarOwnership):void {
   this.writable(destination);const existing=this.get(destination,eventId);
-  if(!existing)return;
+  // A delete may only be recorded as confirmed when it removes a live,
+  // ownership-verified event. An already-cancelled event was deleted
+  // elsewhere (by the user) and a missing event proves nothing — both must
+  // surface so no restore is ever authorized on their strength.
+  if(!existing)throw new AppError('REMOTE_CONFLICT','The managed calendar event was not found on the calendar');
   assertCalendarOwnership(existing,ownership);
+  if(existing.status==='cancelled')throw new AppError('REMOTE_CONFLICT','The managed calendar event was already deleted elsewhere');
   if(existing.etag!==etag)throw new AppError('REMOTE_CONFLICT','The managed calendar event changed elsewhere');
   this.transport.request(destination.connectionId,'calendar',eventPath(destination,eventId)+'?sendUpdates=none','calendar.write','DELETE',undefined,{'If-Match':etag});
  }

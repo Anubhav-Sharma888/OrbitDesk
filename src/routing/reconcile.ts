@@ -3,7 +3,7 @@ import {assertCalendarOwnership,type CalendarPort,type CalendarEvent,type Calend
 import {normalizeDecision} from './rules.js';
 export interface ReconcileResult {status:'synced'|'skipped'|'blocked'|'conflict'|'unknown';task:Task;error?:string;eventIds:string[]}
 export interface CalendarLink {taskId:string;destination:Destination;eventId:string;ownership:CalendarOwnership;etag:string;lastStart:CalendarTime;lastEnd:CalendarTime;summary:string;description:string}
-export interface CalendarOperation {taskId:string;destination:Destination;eventId:string;ownership:CalendarOwnership;action:'insert'|'update'|'delete';status:'pending'|'complete'|'unknown'|'blocked'|'conflict';body?:ManagedCalendarEvent;expectedEtag?:string;at:string;error?:string}
+export interface CalendarOperation {taskId:string;destination:Destination;eventId:string;ownership:CalendarOwnership;action:'insert'|'update'|'delete'|'restore';status:'pending'|'complete'|'unknown'|'blocked'|'conflict';body?:ManagedCalendarEvent;expectedEtag?:string;at:string;error?:string;deleteConfirmed?:true}
 function hash(value:string,ids:Ids):string {
  const digest=ids.hash(value).toLowerCase();
  if(!/^[a-f0-9]{8,256}$/.test(digest))throw new AppError('INVALID_HASH','A stable SHA-256 compatible hash is required for managed calendar IDs');
@@ -63,15 +63,13 @@ export class CalendarReconciler {
     if(existing){
      if(existing.id!==id)throw new AppError('MALFORMED_PROVIDER','Google returned a different calendar event');
      if(existing.status==='cancelled'){
-      // A cancelled event at this deterministic id is only restorable when the
-      // link row is gone: OrbitDesk's own delete-cleanup always removes the
-      // link after a successful delete, so an absent link means this is our
-      // own earlier delete (the owner's Restore reopens the task). A link row
-      // that still exists means the deletion was external (the user deleted
-      // the event in Google Calendar) and must NOT be silently recreated.
-      if(row)throw new AppError('REMOTE_CONFLICT','The managed calendar event was deleted elsewhere');
+      const previous=this.store.get<CalendarOperation>('calendar_operation',id)?.data;
+      const ownDelete=previous?.action==='delete'&&previous.status==='complete'&&previous.deleteConfirmed===true;
+      // Retry only against the same cancelled version if a restore was not confirmed.
+      const retry=previous?.action==='restore'&&(previous.status==='pending'||previous.status==='unknown')&&previous.expectedEtag===existing.etag;
+      if(row||(!ownDelete&&!retry))throw new AppError('REMOTE_CONFLICT','The managed calendar event was deleted elsewhere');
       assertCalendarOwnership(existing,owner);
-      this.write(id,{taskId:task.id,destination,eventId:id,ownership:owner,action:'update',status:'pending',body,expectedEtag:existing.etag,at:this.clock.iso()},()=>this.calendar.restore(destination,body,existing.etag));
+      this.write(id,{taskId:task.id,destination,eventId:id,ownership:owner,action:'restore',status:'pending',body,expectedEtag:existing.etag,at:this.clock.iso()},()=>this.calendar.restore(destination,body,existing.etag));
       result.eventIds.push(id);
       continue;
      }
@@ -90,12 +88,7 @@ export class CalendarReconciler {
       try{return this.calendar.insert(destination,body)}catch(e){
        if(!(e instanceof AppError)||e.code!=='ALREADY_EXISTS')throw e;
        const found=this.calendar.get(destination,id);if(!found)throw new AppError('NETWORK_UNCERTAIN','The managed event exists but Google has not returned it yet');
-       if(found.status==='cancelled'){
-        // The id is reserved by our own earlier delete (Google trash): restore
-        // the trashed event to active with the current content instead of
-        // failing on the stale body comparison.
-        assertCalendarOwnership(found,owner);return this.calendar.restore(destination,body,found.etag);
-       }
+       if(found.status==='cancelled')throw new AppError('REMOTE_CONFLICT','The managed calendar event was deleted elsewhere');
        assertCalendarOwnership(found,owner);if(!sameBody(found,body))throw new AppError('REMOTE_CONFLICT','The existing managed calendar event differs from the pending creation');return found;
       }
      });
@@ -119,7 +112,10 @@ export class CalendarReconciler {
   this.store.atomic(()=>{
    const current=this.store.get<CalendarLink>('calendar_link',event.id);
    this.store.put<CalendarLink>('calendar_link',event.id,{taskId:owner.taskId,destination,eventId:event.id,ownership:owner,etag:event.etag,lastStart:event.start,lastEnd:event.end,summary:event.summary??'',description:event.description??''},current?.version??null);
-   const operation=this.store.get<CalendarOperation>('calendar_operation',event.id);if(operation)this.store.put('calendar_operation',event.id,{...operation.data,status:'complete',at:this.clock.iso()},operation.version);
+   const operation=this.store.get<CalendarOperation>('calendar_operation',event.id);
+   // A live event supersedes any earlier deletion evidence.
+   if(operation?.data.action==='delete')this.store.remove('calendar_operation',event.id,operation.version);
+   else if(operation)this.store.put('calendar_operation',event.id,{...operation.data,status:'complete',at:this.clock.iso()},operation.version);
   });
  }
  private write(id:string,operation:CalendarOperation,mutate:()=>CalendarEvent):void {
@@ -136,16 +132,19 @@ export class CalendarReconciler {
   const destination=link.destination;const selected=this.calendar.listCalendars(destination.connectionId).find(c=>c.id===destination.calendarId);
   if(!selected?.writable||!['owner','writer'].includes(selected.accessRole))throw new AppError('CALENDAR_UNWRITABLE','The previous route calendar is unavailable or does not grant supported write access');
   const event=this.calendar.get(destination,link.eventId);
-  if(event&&event.status!=='cancelled'){
-   assertCalendarOwnership(event,link.ownership);
-   if(link.etag&&event.etag!==link.etag)throw new AppError('REMOTE_CONFLICT','The calendar event changed elsewhere; review it before removal');
-   const operation:CalendarOperation={taskId:link.taskId,destination,eventId:link.eventId,ownership:link.ownership,action:'delete',status:'pending',expectedEtag:event.etag,at:this.clock.iso()};
-   this.store.atomic(()=>{const row=this.store.get<CalendarOperation>('calendar_operation',link.eventId);this.store.put('calendar_operation',link.eventId,operation,row?.version??null)});
-   try{this.calendar.delete(destination,link.eventId,event.etag,link.ownership)}catch(e){this.fail(link.eventId,e);throw e}
-  }
+  if(!event||event.status==='cancelled')throw new AppError('REMOTE_CONFLICT','The managed calendar event was deleted elsewhere');
+  assertCalendarOwnership(event,link.ownership);
+  if(link.etag&&event.etag!==link.etag)throw new AppError('REMOTE_CONFLICT','The calendar event changed elsewhere; review it before removal');
+  const operation:CalendarOperation={taskId:link.taskId,destination,eventId:link.eventId,ownership:link.ownership,action:'delete',status:'pending',expectedEtag:event.etag,at:this.clock.iso()};
+  const pending=this.store.atomic(()=>{
+   const row=this.store.get<CalendarOperation>('calendar_operation',link.eventId);
+   return this.store.put('calendar_operation',link.eventId,operation,row?.version??null);
+  });
+  try{this.calendar.delete(destination,link.eventId,event.etag,link.ownership)}catch(e){this.fail(link.eventId,e);throw e}
   this.store.atomic(()=>{
-   const current=this.store.get<CalendarLink>('calendar_link',link.eventId);if(current)this.store.remove('calendar_link',link.eventId,current.version);
-   const operation=this.store.get<CalendarOperation>('calendar_operation',link.eventId);if(operation)this.store.put('calendar_operation',link.eventId,{...operation.data,status:'complete',at:this.clock.iso()},operation.version);
+   this.store.put('calendar_operation',link.eventId,{...operation,status:'complete',deleteConfirmed:true,at:this.clock.iso()},pending.version);
+   const current=this.store.get<CalendarLink>('calendar_link',link.eventId);
+   if(current)this.store.remove('calendar_link',link.eventId,current.version);
   });
  }
 }

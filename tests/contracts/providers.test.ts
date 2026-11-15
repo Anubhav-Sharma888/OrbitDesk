@@ -35,7 +35,8 @@ it('cancelledEventParseKeepsOwnershipMetadataSoRestoreCanVerifyIt',()=>{
  const transport=new GoogleTransport({access:()=>'token-a'} as never,{fetch:(r:HttpRequest):HttpResponse=>{calls.push(r);
   if(r.method==='PATCH')return {status:200,json:{id:'odtest',etag:'"3"',summary:'Gate 3',start:{date:'2026-11-02'},end:{date:'2026-11-03'},extendedProperties:{private:ownership}}};
   if(r.url.includes('/users/me/calendarList'))return {status:200,json:{items:[{id:'cal-1',accessRole:'owner'}]}};
-  return {status:200,json:{id:'odtest',etag:'"2"',status:'cancelled',start:{},end:{},extendedProperties:{private:ownership}}};
+  if(r.url.includes('/events/odtest'))return {status:200,json:{id:'odtest',etag:'"2"',status:'cancelled',start:{},end:{},extendedProperties:{private:ownership}}};
+  return {status:404,json:{error:{code:404,message:'Not Found'}}};
  }} as never);
  const calendar=new GoogleCalendar(transport);
  const destination={connectionId:'a',calendarId:'cal-1'};
@@ -51,4 +52,8 @@ it('cancelledEventParseKeepsOwnershipMetadataSoRestoreCanVerifyIt',()=>{
  expect(JSON.parse(String(patch!.body)).status).toBe('confirmed'); // restore requests the active state explicitly
  expect(patch!.headers['If-Match']).toBe('"2"');
  expect(()=>calendar.restore(destination,{id:'odtest',summary:'x',description:'',start:{date:'2026-11-02'},end:{date:'2026-11-03'},extendedProperties:{private:{orbitdesk:'v1',taskId:'other',routeKey:'other'}}},'"2"')).toThrow(/ownership/); // foreign cancelled event stays refused
+ // Delete strictness: an already-cancelled event and a missing event can
+ // never be recorded as confirmed OrbitDesk deletions.
+ expect(()=>calendar.delete(destination,'odtest','"2"',ownership)).toThrow(/already deleted elsewhere/);
+ expect(()=>calendar.delete(destination,'odabsent','"2"',ownership)).toThrow(/not found on the calendar/);
 });
