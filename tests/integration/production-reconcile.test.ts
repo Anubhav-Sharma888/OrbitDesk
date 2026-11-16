@@ -45,7 +45,14 @@ function fakeCalendarPort(){
    const event:CalendarEvent={...structuredClone(body),etag:'"2"'};events.set(k,event);writes.push({method:'PATCH',destination,body:structuredClone(body),etag});return structuredClone(event)},
   delete:(destination,id,etag)=>{const k=key(destination,id),current=events.get(k);
    if(!current||current.etag!==etag)throw Object.assign(new Error('conflict'),{code:'REMOTE_CONFLICT'});
-   events.delete(k);writes.push({method:'DELETE',destination,etag})}
+   if(current.status==='cancelled')throw Object.assign(new Error('already deleted elsewhere'),{code:'REMOTE_CONFLICT'});
+   // Model Google Calendar: API delete moves the event to trash (status
+   // cancelled, still get-able by id) rather than purging it.
+   events.set(k,{...current,status:'cancelled'});writes.push({method:'DELETE',destination,etag})},
+  restore:(destination,body,etag)=>{const k=key(destination,body.id),current=events.get(k);
+   if(!current||current.etag!==etag)throw Object.assign(new Error('conflict'),{code:'REMOTE_CONFLICT'});
+   if(current.status!=='cancelled')throw Object.assign(new Error('not cancelled'),{code:'REMOTE_CONFLICT'});
+   const event:CalendarEvent={...structuredClone(body),etag:'"2"'};events.set(k,event);writes.push({method:'POST',destination,body:structuredClone(body)});return structuredClone(event)}
  };
  return {port,events,writes};
 }
@@ -75,6 +82,7 @@ function seedRoutedTask(env:ReconcileEnv,index:number,extraText=''):Task|null{
 // 15-second manual-sync throttle, which would otherwise gate out every pass
 // after the first — the throttle itself is covered by app-service tests.
 function syncNow(env:ReconcileEnv,requestId:string){void requestId;return env.service.runScheduledSync()}
+function reconcileMessages(env:ReconcileEnv){return env.store.list<{kind:string;message:string}>('activity').map(r=>r.data).filter(m=>m.kind==='reconcile').map(m=>m.message)}
 function posts(fake:ReturnType<typeof fakeCalendarPort>){return fake.writes.filter(w=>w.method==='POST')}
 function deletes(fake:ReturnType<typeof fakeCalendarPort>){return fake.writes.filter(w=>w.method==='DELETE')}
 const primary=(env:ReconcileEnv)=>({connectionId:env.connection.id,calendarId:env.connection.id+'-calendar'});
@@ -134,6 +142,65 @@ it('orphanedLinksAreCleanedUpAfterTaskMerge',()=>{
  expect(env.store.list<{status:string}>('calendar_operation').every(r=>r.data.status==='complete')).toBe(true);
 });
 
+it('manualUserDeletionOfAnOpenTaskEventStaysInConflict',()=>{
+ // The user deletes the managed event directly in Google Calendar: the event
+ // moves to trash (cancelled) but the link row remains — OrbitDesk must not
+ // silently recreate over the user's deletion (link row present = external
+ // deletion; restore-in-place fires only when OrbitDesk's own cleanup
+ // removed the link).
+ const env=reconcileFixture();
+ const task=seedRoutedTask(env,1)!;
+ saveRule(env,'rule-1',0,{},{mode:'automatic',destinations:[primary(env)]});
+ syncNow(env,'create');
+ expect(posts(env.fake)).toHaveLength(1);
+ const linkId=managedEventId(task.id,primary(env),env.serviceIds);
+ const link=env.store.get<{eventId:string}>('calendar_link',linkId)!;
+ const eventKey=primary(env).connectionId+'|'+primary(env).calendarId+'|'+link.data.eventId;
+ const event=env.fake.events.get(eventKey)!;
+ env.fake.events.set(eventKey,{...event,status:'cancelled'}); // user trash, ownership metadata intact
+ syncNow(env,'user-deleted');
+ expect(env.fake.writes.filter(w=>w.method==='POST').length).toBe(1); // no recreation after the user's deletion (the fake logs restores as POST too)
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===task.id)).toBe(true); // link intact
+ const reconcileRow=env.store.list<{kind:string;message:string}>('activity').filter(r=>r.data.kind==='reconcile')[1]!;
+ expect(reconcileRow.data.message).toContain('1 conflicts');
+ expect(reconcileRow.data.message).toContain('deleted elsewhere');
+});
+
+it('externallyDeletedEventStaysDeletedAcrossCompleteDismissRestore',()=>{
+ // The user deletes the managed event directly in Google Calendar (trash
+ // keeps its ownership metadata). OrbitDesk must never recreate it: the
+ // conflict pass keeps the link, the completion cleanup cannot claim a
+ // confirmed delete of an already-cancelled event, and every later pass
+ // (open or completed) keeps reporting the external deletion.
+ const env=reconcileFixture();
+ const task=seedRoutedTask(env,1)!;
+ saveRule(env,'rule-1',0,{},{mode:'automatic',destinations:[primary(env)]});
+ syncNow(env,'create');
+ expect(posts(env.fake)).toHaveLength(1);
+ const linkId=managedEventId(task.id,primary(env),env.serviceIds);
+ const eventKey=primary(env).connectionId+'|'+primary(env).calendarId+'|'+linkId;
+ // External deletion: the user trashes the event in Google Calendar.
+ const event=env.fake.events.get(eventKey)!;
+ env.fake.events.set(eventKey,{...event,status:'cancelled'});
+ syncNow(env,'user-deleted');
+ expect(reconcileMessages(env).slice(-1)[0]).toContain('deleted elsewhere'); // conflict pass, link kept
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===task.id)).toBe(true);
+ // Complete + Sync: the cleanup cannot claim a confirmed delete of an
+ // already-cancelled event, so the link row is preserved.
+ okValue(env.service.handle(actor,{type:'task.complete',requestId:'complete',payload:{id:task.id,version:task.version}}));
+ syncNow(env,'complete-sync');
+ expect(env.fake.events.get(eventKey)?.status).toBe('cancelled'); // stays deleted
+ expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===task.id)).toBe(true); // cleanup could not confirm the delete
+ // Dismiss + Restore + Sync: still no recreation, at any task state.
+ const dismissed=okValue<{version:number}>(env.service.handle(actor,{type:'task.dismiss',requestId:'dismiss',payload:{id:task.id,version:task.version+1}}));
+ okValue(env.service.handle(actor,{type:'task.restore',requestId:'restore',payload:{id:task.id,version:dismissed.version}}));
+ syncNow(env,'restore-sync');
+ expect(env.fake.events.get(eventKey)?.status).toBe('cancelled'); // stays deleted
+ expect(env.fake.writes.filter(w=>w.method==='POST'||w.method==='RESTORE').length).toBe(1); // exactly the original creation, nothing since
+ expect(reconcileMessages(env).slice(-1)[0]).toContain('deleted elsewhere');
+ // The task is open again and its record is intact for the owner to resolve.
+ expect(env.store.get<Task>('tasks',task.id)!.data.status).toBe('open');
+});
 it('linkedQuarantinedTaskIsPausedNotCleaned',()=>{
  // A task that still owns a link but is quarantined (importedUnreviewed via a
  // bundle import) is paused: no writes, no per-pass conflict noise, and it is
@@ -186,7 +253,7 @@ it('managedEventLifecycleTransitions',()=>{
  const doneA=okValue<{version:number}>(env.service.handle(actor,{type:'task.complete',requestId:'done-a',payload:{id:taskA.id,version:1}}));
  syncNow(env,'after-complete');
  expect(deletes(env.fake)).toHaveLength(1); // RED today: 0 — completed tasks never reach the reconciler
- expect(env.fake.events.has(eventA)).toBe(false);
+ expect(env.fake.events.get(primary(env).connectionId+'|'+primary(env).calendarId+'|'+eventA)?.status).toBe('cancelled'); // trash model: deleted → cancelled; lookup uses the fake's composite key
  expect(env.store.list<{taskId:string}>('calendar_link').some(r=>r.data.taskId===taskA.id)).toBe(false);
  // (b) dismissal removes it too.
  okValue(env.service.handle(actor,{type:'task.dismiss',requestId:'dismiss-b',payload:{id:taskB.id,version:1}}));

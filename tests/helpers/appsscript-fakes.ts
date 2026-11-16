@@ -25,7 +25,9 @@ export function installAppScriptFakes(owner:string){
   getMaxRows:()=>Math.max(sheetRows.length,1),
   getLastRow:()=>sheetRows.length,
   getRange:(row:number,col:number,rowCount:number,colCount:number)=>({
-   getValues:()=>{const out:unknown[][]=[];for(let r=0;r<rowCount;r++){const src=sheetRows[row-1+r]??[];const line:unknown[]=[];for(let c=0;c<colCount;c++)line.push(src[col-1+c]??'');out.push(line)}return out},
+   // Model Google's read behavior for text-forced cells: a value written with
+   // a leading apostrophe (the writeRows date guard) reads back WITHOUT it.
+   getValues:()=>{const out:unknown[][]=[];for(let r=0;r<rowCount;r++){const src=sheetRows[row-1+r]??[];const line:unknown[]=[];for(let c=0;c<colCount;c++){const raw=src[col-1+c]??'';line.push(typeof raw==='string'&&raw.startsWith("'")?raw.slice(1):raw)}out.push(line)}return out},
    setValues:(values:unknown[][])=>{for(let r=0;r<values.length;r++){while(sheetRows.length<=row-1+r)sheetRows.push([]);sheetRows[row-1+r]=values[r].slice()}}
   }),
   insertRowsAfter:(after:number,count:number)=>{sheetRows.splice(after,0,...Array.from({length:count},()=>[]))}

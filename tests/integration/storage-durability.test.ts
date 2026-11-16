@@ -6,7 +6,7 @@
 // top-level writes commit immediately and are visible to a second store
 // instance. Also documents why rollback around read-only imports is safe.
 import {it,expect} from 'vitest';
-import {SheetRecordStore,type SheetPort} from '../../src/storage/sheets-store.js';
+import {SheetRecordStore,AppsSheetPort,protectSheetCell,type SheetPort} from '../../src/storage/sheets-store.js';
 import {MemoryRecordStore} from '../../src/storage/record-store.js';
 import {SyncScheduler} from '../../src/sync/scheduler.js';
 const clock={now:()=>Date.parse('2026-11-01T00:00:00Z'),iso:()=>'2026-11-01T00:00:00.000Z'};
@@ -77,4 +77,50 @@ it('failedSyncRoundLeavesNoPartialImportRows',()=>{
  // remain because that round completed.
  const rows=store.list('sources');
  expect(rows.length).toBe(1);
+});
+// Models Google Sheets' input interpretation for the one coercion this
+// application can hit: a bare YYYY-MM-DD string cell is stored as a numeric
+// date serial (observed live 2026-11-15 on the sync_budgets id). A leading
+// apostrophe forces text storage; getValues strips it again.
+function coercingFakeSheet(){
+ const stored:unknown[][]=[HEADER.slice()];
+ const serial=(d:string)=>Math.floor((Date.parse(d)-Date.UTC(1899,11,30))/86400000);
+ const coerce=(v:unknown)=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?serial(v):v;
+ const unquote=(v:unknown)=>typeof v==='string'&&v.startsWith("'")?v.slice(1):v;
+ const fakeSheet:any={
+  getLastRow:()=>stored.length,
+  getMaxRows:()=>Math.max(stored.length,100),
+  getRange:(r:number,c:number,nr:number,nc:number)=>({
+   getValues:()=>{const out:unknown[][]=[];for(let i=0;i<nr;i++){const src=stored[r-1+i]??[];const line:unknown[]=[];for(let j=0;j<nc;j++)line.push(unquote(src[c-1+j]??''));out.push(line)}return out},
+   setValues:(v:unknown[][])=>{for(let i=0;i<v.length;i++){while(stored.length<=r-1+i)stored.push([]);stored[r-1+i]=v[i].map(coerce)}}
+  }),
+  insertRowsAfter:(after:number,count:number)=>{stored.splice(after,0,...Array.from({length:count},()=>[]))}};
+ return {stored,fakeSheet};
+}
+it('dateLikeIdsSurviveGoogleSheetsCoercion',()=>{
+ // Live incident 2026-11-15: the sync_budgets record id '2026-11-14' was
+ // stored as date serial 46340, and the record parser failed closed with
+ // STORAGE_CORRUPT on every later read. The writeRows guard must keep
+ // date-like ids as text so reads return the original string id.
+ const {stored,fakeSheet}=coercingFakeSheet();
+ (globalThis as any).SpreadsheetApp={flush:()=>{}};
+ try{
+  const day=new Date(clock.now()).toISOString().slice(0,10);
+  const first=new SheetRecordStore(new AppsSheetPort(fakeSheet),clock,<T,>(w:()=>T):T=>w());
+  first.put('sync_budgets',day,{reserved:2,settle:0},null);
+  expect(stored[1][1]).toBe("'"+day); // guard prefixed the id before Sheets could coerce
+  const second=new SheetRecordStore(new AppsSheetPort(fakeSheet),clock,<T,>(w:()=>T):T=>w());
+  const row=second.get<{reserved:number}>('sync_budgets',day);
+  expect(row).not.toBeNull(); // RED today: id was stored as a serial number
+  expect(row!.id).toBe(day);
+  expect(row!.data.reserved).toBe(2);
+ }finally{delete (globalThis as any).SpreadsheetApp}
+});
+it('protectSheetCellOnlyTouchesBareDateStrings',()=>{
+ expect(protectSheetCell('2026-11-15')).toBe("'2026-11-15");
+ expect(protectSheetCell('2026-11-15T19:59:00.000Z')).toBe('2026-11-15T19:59:00.000Z'); // datetimes with time+zone never coerce (observed)
+ expect(protectSheetCell('gmail:google:110308993223414888071')).toBe('gmail:google:110308993223414888071');
+ expect(protectSheetCell('{"json":"object"}')).toBe('{"json":"object"}');
+ expect(protectSheetCell(46340)).toBe(46340);
+ expect(protectSheetCell(null)).toBe(null);
 });

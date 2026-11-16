@@ -18,6 +18,7 @@ class CalendarFake implements CalendarPort {
  insert(destination:Destination,body:ManagedCalendarEvent){const key=this.key(destination,body.id);if(this.events.has(key))throw new AppError('ALREADY_EXISTS','collision');const event={...structuredClone(body),etag:'"1"'};this.events.set(key,event);this.writes.push({method:'POST',destination,body});if(this.failAfterInsert)throw new AppError('NETWORK_UNCERTAIN','timeout');return event;}
  update(destination:Destination,body:ManagedCalendarEvent,etag:string){const key=this.key(destination,body.id);if(this.failUpdate||this.events.get(key)?.etag!==etag)throw new AppError('REMOTE_CONFLICT','changed');const event={...structuredClone(body),etag:'"2"'};this.events.set(key,event);this.writes.push({method:'PATCH',destination,body,etag});return event;}
  delete(destination:Destination,id:string,etag:string,_ownership:CalendarOwnership){const key=this.key(destination,id);if(this.events.get(key)?.etag!==etag)throw new AppError('REMOTE_CONFLICT','changed');this.events.delete(key);this.writes.push({method:'DELETE',destination,etag});}
+ restore(destination:Destination,body:ManagedCalendarEvent,etag:string){const key=this.key(destination,body.id);const current=this.events.get(key);if(!current||current.status!=='cancelled'||current.etag!==etag)throw new AppError('REMOTE_CONFLICT','changed');const event={...structuredClone(body),etag:'"2"'};this.events.set(key,event);this.writes.push({method:'POST',destination,body});return event;}
 }
 function fixture(){const store=new MemoryRecordStore(clock),calendar=new CalendarFake();return {store,calendar,reconcile:new CalendarReconciler(store,calendar,clock,ids)}}
 it('routesAToDAndCDToB',()=>{
@@ -67,6 +68,46 @@ it('unknownCreateUsesDurableIdAndReconcilesWithoutDuplicates',()=>{
  const {store,calendar,reconcile}=fixture();calendar.failAfterInsert=true;
  expect(reconcile.reconcile(task(),automatic('D')).status).toBe('unknown');expect(store.list<{status:string}>('calendar_operation').some(r=>r.data.status==='unknown')).toBe(true);
  calendar.failAfterInsert=false;expect(new CalendarReconciler(store,calendar,clock,ids).reconcile(task(),automatic('D')).status).toBe('synced');expect(calendar.events.size).toBe(1);expect(calendar.writes).toHaveLength(1);
+});
+it('duplicateInsertDoesNotRestoreAnExternallyCancelledEvent',()=>{
+ const {calendar,reconcile}=fixture();
+ const destination=d('D');
+ const id=managedEventId(task().id,destination,ids);
+ const key=calendar.key(destination,id);
+ reconcile.reconcile(task(),automatic('D'));
+ const cancelled={...calendar.events.get(key)!,status:'cancelled'};
+ const recovery=fixture();
+ recovery.calendar.events.set(key,cancelled);
+ const get=recovery.calendar.get.bind(recovery.calendar);
+ let firstLookup=true;
+ recovery.calendar.get=(target,eventId)=>{
+  if(firstLookup){firstLookup=false;return null;}
+  return get(target,eventId);
+ };
+ expect(recovery.reconcile.reconcile(task(),automatic('D'))).toMatchObject({status:'conflict',error:expect.stringContaining('deleted elsewhere')});
+ expect(recovery.calendar.events.get(key)?.status).toBe('cancelled');
+ expect(recovery.calendar.writes).toHaveLength(0);
+});
+it('uncertainRestoreRetriesOnlyTheSameCancelledVersion',()=>{
+ const {calendar,reconcile}=fixture();
+ const destination=d('D');
+ const id=managedEventId(task().id,destination,ids);
+ const key=calendar.key(destination,id);
+ const remove=calendar.delete.bind(calendar);
+ calendar.delete=(target,eventId,etag,owner)=>{
+  const event=calendar.get(target,eventId)!;
+  remove(target,eventId,etag,owner);
+  calendar.events.set(key,{...event,status:'cancelled',etag:'"cancelled"'});
+ };
+ expect(reconcile.reconcile(task(),automatic('D')).status).toBe('synced');
+ expect(reconcile.reconcile(task('A',{status:'complete'}),automatic('D')).status).toBe('synced');
+ const restore=calendar.restore.bind(calendar);
+ calendar.restore=()=>{throw new AppError('NETWORK_UNCERTAIN','timeout');};
+ expect(reconcile.reconcile(task(),automatic('D')).status).toBe('unknown');
+ calendar.restore=restore;
+ expect(reconcile.reconcile(task(),automatic('D')).status).toBe('synced');
+ expect(reconcile.reconcile(task(),automatic('D')).status).toBe('synced');
+ expect(calendar.writes.map(write=>write.method)).toEqual(['POST','DELETE','POST']);
 });
 it('calendarConflictKeepsRemoteEditAndPendingOperation',()=>{
  const {store,calendar,reconcile}=fixture();reconcile.reconcile(task(),automatic('D'));calendar.failUpdate=true;

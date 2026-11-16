@@ -41,7 +41,21 @@ export class AppsSheetPort implements SheetPort {
  readRows():unknown[][] {const last=this.sheet.getLastRow();return last?this.sheet.getRange(1,1,last,5).getValues():[]}
  writeRows(rows:unknown[][]):void {
   if(rows.length>this.sheet.getMaxRows())this.sheet.insertRowsAfter(this.sheet.getMaxRows(),rows.length-this.sheet.getMaxRows());
-  this.sheet.getRange(1,1,rows.length,5).setValues(rows as (string|number|boolean|Date)[][]);
+  // Google Sheets applies input interpretation to values written via
+  // setValues: a bare ISO date string (the sync_budgets record id, for
+  // example) is stored as a numeric date serial, which the record parser
+  // then rejects as corrupt. Prefixing such cells with an apostrophe forces
+  // text storage; getValues returns the clean string afterwards. Only bare
+  // YYYY-MM-DD strings are affected — payloads are JSON objects and other
+  // ids contain non-date prefixes (observed live 2026-11-15).
+  const guarded=rows.map(row=>row.map(protectSheetCell));
+  this.sheet.getRange(1,1,guarded.length,5).setValues(guarded as (string|number|boolean|Date)[][]);
   SpreadsheetApp.flush();
  }
 }
+// Exported for tests. Models the one coercion Google Sheets performs on
+// values this application writes.
+export function protectSheetCell(value:unknown):unknown {
+ return typeof value==='string'&&dateLike.test(value)?"'"+value:value;
+}
+const dateLike=/^\d{4}-\d{2}-\d{2}$/;
