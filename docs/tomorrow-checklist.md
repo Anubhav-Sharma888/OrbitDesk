@@ -61,6 +61,8 @@ One checklist for the whole deployment-to-live path. Complete the gates **in ord
 
 ## Gate 5 — Background scheduling validation (last automation gate)
 
+See the [Gate 5 live verification record](gate5-record.md) for the confirmed owner-account checks and the remaining acceptance criteria.
+
 - **Service/account:** owner account + the agent OAuth client from Gate 1'.
 - **Purpose / minimum permission:** verify scheduled sync uses the background grant, honors the automation switch, and fails closed when the grant is missing.
 - **Do:** authorize background access for the account (Accounts → Authorize background access); confirm `GOOGLE_AGENT_*` properties; install a time-driven trigger ONLY now (Apps Script → Triggers → scheduledSync, e.g. every 30 minutes); enable automation in Settings; observe; then test fail-closed by revoking/pausing.
